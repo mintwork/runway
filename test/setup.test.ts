@@ -116,7 +116,7 @@ describe('/setup', () => {
     expect(res.headers?.['cache-control']).toBe('no-store');
   });
 
-  it('shows progress (and no form) once the App exists', async () => {
+  it('shows progress, without naming the org or App, once the App exists', async () => {
     params({
       '/runway/runway/github-app': JSON.stringify({
         appId: '9',
@@ -127,8 +127,11 @@ describe('/setup', () => {
       }),
     });
     const res = await handler(event('/setup', { token: TOKEN }));
-    expect(res.body).toContain('runway-acme');
+    expect(res.body).toContain('GitHub App created');
     expect(res.body).not.toContain('<form');
+    // Not installed yet in this test, so the install link (the one thing a visitor needs) is shown.
+    expect(res.body).toContain('installations/new');
+    expect(res.body).not.toContain('acme</');
   });
 });
 

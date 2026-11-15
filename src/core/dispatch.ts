@@ -1,7 +1,7 @@
 // What runway does with each workflow_job event, and the periodic sweep. Pure orchestration:
 // GitHub, DynamoDB and the compute providers are injected, so every decision is testable.
 import { randomBytes } from 'node:crypto';
-import { CapacityError, type Provider } from '../providers/types.js';
+import { CapacityError, NotReadyError, type Provider } from '../providers/types.js';
 import type { Config } from './config.js';
 import type { GitHubApp, RepoRef } from './github.js';
 import { type Compute, describeSpec, hasTrigger, parseLabels, specFor } from './labels.js';
@@ -41,6 +41,8 @@ export interface Deps {
   log: (message: string, fields?: Record<string, unknown>) => void;
   now?: () => number;
   newRunnerName?: () => string;
+  /** Put a queued job back on the queue (the sweep uses it when a runner's machine died early). */
+  requeue?: (job: QueuedJob) => Promise<void>;
 }
 
 export type QueuedOutcome =
@@ -125,6 +127,10 @@ export async function handleQueued(job: QueuedJob, deps: Deps): Promise<QueuedOu
     installationId: job.installationId,
     jobId: job.jobId,
     runId: job.runId,
+    labels: job.labels,
+    private: job.private,
+    headSha: job.headSha,
+    jobName: job.jobName,
     state: 'launching',
     launchedAt: now(),
     ttl: ttlFromNow(config.maxJobMinutes * 60 + 3 * 24 * 3600, now()),
@@ -171,6 +177,11 @@ export async function handleQueued(job: QueuedJob, deps: Deps): Promise<QueuedOu
         });
         return { status: 'launched', runnerName, compute, resourceId: launched.resourceId };
       } catch (e) {
+        if (e instanceof NotReadyError) {
+          // Wait for this compute type rather than moving the job to another one.
+          await cleanUp(e.message);
+          throw new RetryLater(e.message);
+        }
         if (!(e instanceof CapacityError)) throw e;
         capacityErrors.push(e.message);
         log('no capacity, trying the next compute type', { runner: runnerName, error: e.message });
@@ -223,6 +234,8 @@ async function terminate(record: RunnerRecord, deps: Deps, reason: string): Prom
 export interface SweepResult {
   terminated: string[];
   orphans: string[];
+  /** Jobs whose machine died before taking them, queued again. */
+  relaunched: number[];
 }
 
 /**
@@ -233,60 +246,83 @@ export interface SweepResult {
 export async function sweep(deps: Deps): Promise<SweepResult> {
   const { config, state, github, log } = deps;
   const now = (deps.now ?? Date.now)();
-  const result: SweepResult = { terminated: [], orphans: [] };
+  const result: SweepResult = { terminated: [], orphans: [], relaunched: [] };
   const active = await state.activeRunners();
   const maxAgeMs = (config.maxJobMinutes + 15) * 60_000;
 
+  // What is actually running, per compute type (undefined when it couldn't be listed).
+  const live = new Map<string, Awaited<ReturnType<Provider['listManaged']>>>();
+  for (const [compute, provider] of Object.entries(deps.providers)) {
+    try {
+      live.set(compute, await provider.listManaged());
+    } catch (e) {
+      log('sweep could not list resources', { compute, error: (e as Error).message });
+    }
+  }
+  /** Lambda invocations can't be listed, so only the other types can be seen to have died. */
+  const machineGone = (r: RunnerRecord) => {
+    if (r.compute === 'lambda' || !r.resourceId) return false;
+    const resources = live.get(r.compute);
+    return resources !== undefined && !resources.some((x) => x.resourceId === r.resourceId);
+  };
+
   for (const r of active) {
     const age = now - r.launchedAt;
+    const ref = { owner: r.owner, repo: r.repo, ownerIsOrg: r.ownerIsOrg };
     let reason: string | undefined;
+    let status: string | undefined;
     if (age > maxAgeMs) {
       reason = 'job time limit reached';
     } else if (r.state === 'launching' && age > 10 * 60_000) {
       reason = 'launch never completed';
     } else if (r.state === 'launched' && age > 3 * 60_000) {
-      const status = await github
-        .jobStatus(
-          r.installationId,
-          { owner: r.owner, repo: r.repo, ownerIsOrg: r.ownerIsOrg },
-          r.jobId,
-        )
-        .catch(() => 'unknown');
+      status = await github.jobStatus(r.installationId, ref, r.jobId).catch(() => 'unknown');
       // Its job was cancelled, or another runner took it and nothing else has picked this one up.
       if (
         status === 'completed' ||
         (status !== 'queued' && status !== 'unknown' && age > 10 * 60_000)
       ) {
         reason = 'job no longer queued';
+      } else if (status === 'queued' && machineGone(r)) {
+        reason = 'machine stopped before it took the job';
       }
     }
     if (!reason) continue;
     try {
       await terminate(r, deps, reason);
-      if (r.runnerId) {
-        await github
-          .deleteRunner(
-            r.installationId,
-            { owner: r.owner, repo: r.repo, ownerIsOrg: r.ownerIsOrg },
-            r.runnerId,
-          )
-          .catch(() => {});
-      }
+      if (r.runnerId) await github.deleteRunner(r.installationId, ref, r.runnerId).catch(() => {});
       result.terminated.push(r.pk);
+      // The job still needs a runner: free its claim and queue it again, so it isn't stuck.
+      if (reason === 'machine stopped before it took the job' && r.labels && deps.requeue) {
+        await state.releaseJob(r.jobId);
+        await deps.requeue({
+          jobId: r.jobId,
+          runId: r.runId,
+          labels: r.labels,
+          owner: r.owner,
+          repo: r.repo,
+          ownerIsOrg: r.ownerIsOrg,
+          private: r.private ?? true,
+          installationId: r.installationId,
+          headSha: r.headSha,
+          jobName: r.jobName,
+        });
+        result.relaunched.push(r.jobId);
+        log('re-queued job whose machine stopped', {
+          runner: r.pk,
+          job: r.jobId,
+          compute: r.compute,
+        });
+      }
     } catch (e) {
       log('sweep could not terminate', { runner: r.pk, error: (e as Error).message });
     }
   }
 
   const known = new Set(active.map((r) => r.resourceId).filter(Boolean));
-  for (const [compute, provider] of Object.entries(deps.providers)) {
-    let resources: Awaited<ReturnType<Provider['listManaged']>> = [];
-    try {
-      resources = await provider.listManaged();
-    } catch (e) {
-      log('sweep could not list resources', { compute, error: (e as Error).message });
-      continue;
-    }
+  for (const [compute, resources] of live) {
+    const provider = deps.providers[compute as Compute];
+    if (!provider) continue;
     for (const res of resources) {
       if (known.has(res.resourceId) || now - res.startedAt < 15 * 60_000) continue;
       try {

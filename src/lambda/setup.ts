@@ -140,13 +140,15 @@ async function progress(app: StoredApp): Promise<APIGatewayProxyResult> {
   }
   const step = (done: boolean, text: string) =>
     `<li>${done ? '<span class="ok">✓</span>' : '<span class="wait">…</span>'} ${text}</li>`;
+  const imagesReady = images.length > 0 && images.every((i) => i.includes('✓'));
+  // Anyone with this link can see this page, so it names nothing: no organization, App or repositories.
   return page(
     'runway setup',
-    `<h1>${installed && images.every((i) => i.includes('✓')) && images.length ? 'runway is ready' : 'Setting up runway'}</h1><ul>
-${step(true, `GitHub App <a href="${esc(app.htmlUrl)}">${esc(app.slug)}</a> created`)}
-${step(Boolean(installed), installed ? `Installed on ${esc(app.owner)} (${installed})` : `Not installed yet: <a href="${esc(installUrl(app.slug))}">install it on your repositories</a>`)}
-${images.length ? images.map((i) => `<li>${i}</li>`).join('') : step(false, 'Runner images are building (about 10 minutes)')}
-</ul><p>Then use <code>runs-on: [runway]</code> in a workflow. Fargate and Lambda images build alongside; <code>npx @mintwork/runway status</code> shows everything.</p>`,
+    `<h1>${installed && imagesReady ? 'runway is ready' : 'Setting up runway'}</h1><ul>
+${step(true, 'GitHub App created')}
+${step(Boolean(installed), installed ? 'GitHub App installed' : `GitHub App not installed yet: <a href="${esc(installUrl(app.slug))}">install it on your repositories</a>`)}
+${step(imagesReady, imagesReady ? 'Runner images built' : 'Runner images are building (about 10 minutes)')}
+</ul><p>Then use <code>runs-on: [runway]</code> in a workflow. For details, run <code>npx -y @mintwork/runway status</code>.</p>`,
   );
 }
 

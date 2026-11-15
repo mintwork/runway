@@ -44,6 +44,30 @@ export class CapacityError extends Error {
   }
 }
 
+/**
+ * The compute type is set up but not ready yet, typically because its runner image is still
+ * building right after setup. The job waits (retried every 30 s); it does not fall back.
+ */
+export class NotReadyError extends Error {
+  constructor(
+    readonly compute: Compute,
+    message: string,
+  ) {
+    super(`${compute}: ${message}`);
+  }
+}
+
+/** Runner images are recorded in SSM; until the first build starts, there is no record at all. */
+export function notReadyIfMissing(compute: Compute, e: unknown): never {
+  if ((e as { name?: string })?.name === 'ParameterNotFound') {
+    throw new NotReadyError(
+      compute,
+      'runner images are still being built (first setup takes about 10 minutes)',
+    );
+  }
+  throw e;
+}
+
 const CAPACITY_CODES = [
   'InsufficientInstanceCapacity',
   'InsufficientCapacity',

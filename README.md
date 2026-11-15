@@ -4,7 +4,7 @@
 
 **Run GitHub Actions jobs on your own AWS compute. Pick the machine per job.**
 
-`npx @mintwork/runway setup --owner <your-org> --region eu-central-1`
+`npx -y @mintwork/runway setup --owner <your-org> --region eu-central-1`
 
 Lambda MicroVMs · EC2 (on-demand and Spot) · ECS Fargate · Lambda functions · one `runs-on` line · MIT
 
@@ -54,7 +54,7 @@ npx -y @mintwork/runway setup --owner <github-org-or-user>
 **Or from any machine with AWS credentials** (your laptop, a CI job), adding the region:
 
 ```bash
-npx @mintwork/runway setup --owner <github-org-or-user> --region eu-central-1
+npx -y @mintwork/runway setup --owner <github-org-or-user> --region eu-central-1
 ```
 
 Setup takes about 10 minutes:
@@ -68,7 +68,7 @@ Setup takes about 10 minutes:
 3. The CLI (and the setup page) show the images building. Jobs that start earlier wait for them.
 
 Then use `runs-on: [runway]` in any workflow of those repositories. Check on it with
-`npx @mintwork/runway status`. Need more tools on the runners? See [custom tools](docs/custom-tools.md).
+`npx -y @mintwork/runway status`. Need more tools on the runners? See [custom tools](docs/custom-tools.md).
 
 ## Choosing the machine
 
@@ -98,7 +98,7 @@ refused and `runway status` says why), so a typo never silently runs on the wron
 
 **Fallback.** When a compute type has no capacity (or a quota is used up), runway moves the job to
 the next one in the chain, sized to fit: by default `microvm:ec2`. When nothing has capacity, the job
-waits and runway retries every 30 seconds for up to about 30 minutes, so a burst of jobs queues instead of failing. Change it
+waits and runway retries every 30 seconds for up to about 90 minutes, so a burst of jobs queues instead of failing. Change it
 with `--fallback microvm:ec2,ec2:fargate`.
 
 Startup times are from the launch call until the job's first step, measured in eu-central-1 at
@@ -157,10 +157,10 @@ demand). There is no runway fee. Idle cost is close to zero: no instances wait f
 ## Commands
 
 ```bash
-npx @mintwork/runway setup --owner <org> --region <region>   # first install (safe to re-run)
-npx @mintwork/runway status                                  # health, images, quota, recent runners and refusals
-npx @mintwork/runway update [--rebuild-images]               # deploy a new version / change options
-npx @mintwork/runway destroy                                 # remove everything runway created
+npx -y @mintwork/runway setup --owner <org> --region <region>   # first install (safe to re-run)
+npx -y @mintwork/runway status                                  # health, images, quota, recent runners and refusals
+npx -y @mintwork/runway update [--rebuild-images]               # deploy a new version / change options
+npx -y @mintwork/runway destroy                                 # remove everything runway created
 
 # Deleting the stack in the CloudFormation console also removes everything runway created.
 ```
@@ -168,7 +168,7 @@ npx @mintwork/runway destroy                                 # remove everything
 Options: `--default-compute`, `--fallback`, `--max-job-minutes`, `--microvm-sizes arm64-1cpu,arm64-2cpu`,
 `--runner-policy`, `--runner-tools ./runner-tools.sh`, `--allow-public-repos`, `--stack` (several
 independent setups), `--no-browser`.
-Run `npx @mintwork/runway --help` for all of them.
+Run `npx -y @mintwork/runway --help` for all of them.
 
 ## Limits, honestly
 

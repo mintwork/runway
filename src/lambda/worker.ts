@@ -30,7 +30,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
     } catch (e) {
       failures.push({ itemIdentifier: record.messageId });
       if (e instanceof RetryLater) {
-        log('no capacity; retrying', {
+        log('not launched yet; retrying in 30 s', {
           attempt: record.attributes.ApproximateReceiveCount,
           error: e.message,
         });

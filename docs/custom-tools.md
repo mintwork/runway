@@ -30,8 +30,8 @@ Write a script that installs your tools and hand it to runway. It's baked into t
 and Lambda images when they're built, and EC2 runners run it at boot.
 
 ```bash
-npx @mintwork/runway update --runner-tools ./runner-tools.sh    # upload and rebuild the images
-npx @mintwork/runway update --runner-tools none                 # remove it again
+npx -y @mintwork/runway update --runner-tools ./runner-tools.sh    # upload and rebuild the images
+npx -y @mintwork/runway update --runner-tools none                 # remove it again
 ```
 
 The rebuild takes 10–20 minutes. Jobs keep running on the old images until the new ones are ready.

@@ -42,7 +42,7 @@ export async function status(opts: {
   const stack = await describeStack(new CloudFormationClient({ region: t.region }), t.stack);
   if (!stack)
     throw new CliError(
-      `No runway stack "${t.stack}" in ${t.region}. Set it up with: npx @mintwork/runway setup --owner <org>`,
+      `No runway stack "${t.stack}" in ${t.region}. Set it up with: npx -y @mintwork/runway setup --owner <org>`,
     );
   const out = outputs(stack);
   const good = /^(CREATE|UPDATE)_COMPLETE$/.test(stack.StackStatus ?? '');

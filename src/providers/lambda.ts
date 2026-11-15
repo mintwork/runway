@@ -5,6 +5,8 @@
 //
 // Isolation: the agent ends its own process after the job, which makes Lambda discard the
 // execution environment, so a later job can never land in a sandbox an earlier job touched.
+
+import type { ECRClient } from '@aws-sdk/client-ecr';
 import {
   CreateFunctionCommand,
   GetFunctionConfigurationCommand,
@@ -13,12 +15,15 @@ import {
   PutFunctionEventInvokeConfigCommand,
 } from '@aws-sdk/client-lambda';
 import type { Config, ImageRegistry } from '../core/config.js';
+import { containerImageReady, defaultEcr } from './readiness.js';
 import {
   CapacityError,
   isCapacityError,
   type Launched,
   type LaunchRequest,
   type ManagedResource,
+  NotReadyError,
+  notReadyIfMissing,
   type Provider,
 } from './types.js';
 
@@ -37,6 +42,7 @@ export class LambdaProvider implements Provider {
     private readonly images: () => Promise<ImageRegistry>,
     private readonly client = new LambdaClient({ region: config.region }),
     private readonly sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)),
+    private readonly ecr: ECRClient = defaultEcr(config.region),
   ) {}
 
   /** Create the runner function for this size if it doesn't exist yet, and wait until it's Active. */
@@ -49,11 +55,19 @@ export class LambdaProvider implements Provider {
         .State;
     } catch (e) {
       if ((e as { name?: string }).name !== 'ResourceNotFoundException') throw e;
-      const imageUri = (await this.images()).lambda[arch];
+      const imageUri = (await this.images().catch((e) => notReadyIfMissing('lambda', e))).lambda[
+        arch
+      ];
+      if (
+        imageUri &&
+        !(await containerImageReady(this.ecr, this.config.lambda.repositoryUri, `lambda-${arch}`))
+      ) {
+        throw new NotReadyError('lambda', `the ${arch} Lambda runner image is still being built`);
+      }
       if (!imageUri)
         throw new CapacityError(
           'lambda',
-          `no Lambda runner image for ${arch} yet. Run: npx @mintwork/runway update`,
+          `no Lambda runner image for ${arch} yet. Run: npx -y @mintwork/runway update`,
         );
       await this.client.send(
         new CreateFunctionCommand({

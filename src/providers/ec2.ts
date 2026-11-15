@@ -15,6 +15,7 @@ import {
   type Launched,
   type LaunchRequest,
   type ManagedResource,
+  notReadyIfMissing,
   type Provider,
 } from './types.js';
 
@@ -83,7 +84,7 @@ export class Ec2Provider implements Provider {
 
   async launch(req: LaunchRequest): Promise<Launched> {
     const { spec } = req;
-    const registry = await this.images();
+    const registry = await this.images().catch((e) => notReadyIfMissing('ec2', e));
     const script = userData({
       runnerName: req.runnerName,
       jitConfig: req.jitConfig,

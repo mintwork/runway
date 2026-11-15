@@ -11,12 +11,15 @@ import {
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Config, ImageRegistry } from '../core/config.js';
+import { microvmImageReady } from './readiness.js';
 import {
   CapacityError,
   isCapacityError,
   type Launched,
   type LaunchRequest,
   type ManagedResource,
+  NotReadyError,
+  notReadyIfMissing,
   type Provider,
 } from './types.js';
 
@@ -47,12 +50,15 @@ export class MicrovmProvider implements Provider {
 
   async launch(req: LaunchRequest): Promise<Launched> {
     const key = microvmImageKey(req.spec.arch, req.spec.cpu);
-    const image = (await this.images()).microvm[key];
+    const image = (await this.images().catch((e) => notReadyIfMissing('microvm', e))).microvm[key];
     if (!image) {
       throw new CapacityError(
         'microvm',
-        `no MicroVM image for ${key}. Build it with: npx @mintwork/runway update --microvm-sizes ${req.spec.cpu}cpu`,
+        `no MicroVM image for ${key}. Build it with: npx -y @mintwork/runway update --microvm-sizes ${req.spec.cpu}cpu`,
       );
+    }
+    if (!(await microvmImageReady(this.client, image))) {
+      throw new NotReadyError('microvm', `the ${key} MicroVM image is still being built`);
     }
     // The JIT config is single-use; the bucket's lifecycle rule deletes leftovers after a day.
     await this.s3.send(
@@ -97,7 +103,15 @@ export class MicrovmProvider implements Provider {
   }
 
   async listManaged(): Promise<ManagedResource[]> {
-    const images = Object.values((await this.images()).microvm);
+    let registry: ImageRegistry;
+    try {
+      registry = await this.images();
+    } catch (e) {
+      // No images recorded yet (first setup): there can't be any MicroVMs either.
+      if ((e as { name?: string }).name === 'ParameterNotFound') return [];
+      throw e;
+    }
+    const images = Object.values(registry.microvm);
     const out: ManagedResource[] = [];
     for (const image of images) {
       let nextToken: string | undefined;

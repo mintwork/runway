@@ -5,5 +5,6 @@ import { log, runtimeDeps } from './runtime.js';
 
 export async function handler(): Promise<void> {
   const result = await sweep(await runtimeDeps());
-  if (result.terminated.length || result.orphans.length) log('sweep', { ...result });
+  if (result.terminated.length || result.orphans.length || result.relaunched.length)
+    log('sweep', { ...result });
 }

@@ -11,7 +11,7 @@ import {
   sweep,
 } from '../src/core/dispatch.js';
 import type { RunnerRecord } from '../src/core/state.js';
-import { CapacityError, type Provider } from '../src/providers/types.js';
+import { CapacityError, NotReadyError, type Provider } from '../src/providers/types.js';
 
 const config = {
   stack: 'runway',
@@ -68,12 +68,13 @@ function fakeState(initial: RunnerRecord[] = []) {
 
 function fakeProvider(
   compute: Provider['compute'],
-  behavior: 'ok' | 'capacity' | 'error' = 'ok',
+  behavior: 'ok' | 'capacity' | 'error' | 'not-ready' = 'ok',
 ): Provider & { launch: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn> } {
   return {
     compute,
     launch: vi.fn(async () => {
       if (behavior === 'capacity') throw new CapacityError(compute, 'quota');
+      if (behavior === 'not-ready') throw new NotReadyError(compute, 'image still building');
       if (behavior === 'error') throw new Error('boom');
       return { resourceId: `${compute}-res`, detail: 'x' };
     }),
@@ -252,6 +253,26 @@ describe('handleQueued', () => {
     });
   });
 
+  it('waits for an image that is still building, instead of falling back', async () => {
+    const ec2 = fakeProvider('ec2');
+    const d = deps({ providers: { microvm: fakeProvider('microvm', 'not-ready'), ec2 } });
+    await expect(handleQueued(job, d)).rejects.toBeInstanceOf(RetryLater);
+    expect(ec2.launch).not.toHaveBeenCalled();
+    expect(d.state.claimed.has(11)).toBe(false);
+    expect(d.github.deleteRunner).toHaveBeenCalled();
+  });
+
+  it('records what it needs to queue the job again', async () => {
+    const d = deps();
+    await handleQueued({ ...job, headSha: 'abc', jobName: 'build' }, d);
+    expect(d.state.runners.get('runway-aaaa')).toMatchObject({
+      labels: ['runway', 'microvm'],
+      private: true,
+      headSha: 'abc',
+      jobName: 'build',
+    });
+  });
+
   it('cleans up the same way on an unexpected error, and rethrows it', async () => {
     const d = deps({ providers: { microvm: fakeProvider('microvm', 'error') } });
     await expect(handleQueued(job, d)).rejects.toThrow('boom');
@@ -327,7 +348,14 @@ describe('sweep', () => {
       record({ pk: 'runway-busy', state: 'busy', resourceId: 'vm-busy' }),
       record({ pk: 'runway-wait', jobId: 12, resourceId: 'vm-wait' }),
     ]);
-    const d = deps({ state, now: () => minutes(5) });
+    const microvm = fakeProvider('microvm');
+    (microvm.listManaged as ReturnType<typeof vi.fn>).mockResolvedValue(
+      ['vm-idle', 'vm-busy', 'vm-wait'].map((resourceId) => ({
+        resourceId,
+        startedAt: minutes(0),
+      })),
+    );
+    const d = deps({ state, providers: { microvm }, now: () => minutes(5) });
     d.github.jobStatus.mockImplementation(async (_i: number, _r: unknown, jobId: number) =>
       jobId === 11 ? 'completed' : 'queued',
     );
@@ -342,6 +370,62 @@ describe('sweep', () => {
     expect((await sweep(d)).terminated).toEqual([]);
     d.now = () => minutes(11);
     expect((await sweep(d)).terminated).toEqual(['runway-aaaa']);
+  });
+
+  it('queues a job again when its machine stopped before taking it', async () => {
+    const microvm = fakeProvider('microvm');
+    const requeue = vi.fn(async () => {});
+    const state = fakeState([record({ labels: ['runway', 'microvm'], private: true })]);
+    state.claimed.add(11);
+    const d = deps({ state, providers: { microvm }, now: () => minutes(4) });
+    Object.assign(d, { requeue });
+    const res = await sweep(d);
+    expect(res.relaunched).toEqual([11]);
+    expect(requeue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 11,
+        labels: ['runway', 'microvm'],
+        private: true,
+        installationId: 33,
+      }),
+    );
+    expect(state.claimed.has(11)).toBe(false);
+    expect(state.runners.get('runway-aaaa')).toMatchObject({
+      state: 'done',
+      error: 'machine stopped before it took the job',
+    });
+  });
+
+  it('leaves a runner alone while its machine is still there, and never re-queues Lambda runners', async () => {
+    const microvm = fakeProvider('microvm');
+    (microvm.listManaged as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { resourceId: 'vm-1', startedAt: minutes(0) },
+    ]);
+    const requeue = vi.fn(async () => {});
+    const d = deps({
+      state: fakeState([
+        record({ labels: ['runway'] }),
+        record({ pk: 'runway-l', compute: 'lambda', resourceId: 'fn#1', labels: ['runway'] }),
+      ]),
+      providers: { microvm },
+      now: () => minutes(4),
+    });
+    Object.assign(d, { requeue });
+    expect((await sweep(d)).relaunched).toEqual([]);
+    expect(requeue).not.toHaveBeenCalled();
+  });
+
+  it('does not re-queue when the machine list could not be read', async () => {
+    const microvm = fakeProvider('microvm');
+    (microvm.listManaged as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('throttled'));
+    const requeue = vi.fn(async () => {});
+    const d = deps({
+      state: fakeState([record({ labels: ['runway'] })]),
+      providers: { microvm },
+      now: () => minutes(4),
+    });
+    Object.assign(d, { requeue });
+    expect((await sweep(d)).relaunched).toEqual([]);
   });
 
   it('terminates tagged machines runway has no record of, after a grace period', async () => {

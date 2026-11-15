@@ -1,6 +1,8 @@
 // ECS Fargate: one task per job from our runner container image. The task's CPU, memory and
 // ephemeral storage are set per job with RunTask overrides, so one task definition per
 // architecture covers every size. The container runs the agent in oneshot mode and exits.
+
+import type { ECRClient } from '@aws-sdk/client-ecr';
 import {
   DescribeTasksCommand,
   ECSClient,
@@ -9,12 +11,14 @@ import {
   StopTaskCommand,
 } from '@aws-sdk/client-ecs';
 import type { Config } from '../core/config.js';
+import { containerImageReady, defaultEcr } from './readiness.js';
 import {
   CapacityError,
   isCapacityError,
   type Launched,
   type LaunchRequest,
   type ManagedResource,
+  NotReadyError,
   type Provider,
 } from './types.js';
 
@@ -27,10 +31,23 @@ export class FargateProvider implements Provider {
   constructor(
     private readonly config: Config,
     private readonly client = new ECSClient({ region: config.region }),
+    private readonly ecr: ECRClient = defaultEcr(config.region),
   ) {}
 
   async launch(req: LaunchRequest): Promise<Launched> {
     const { spec } = req;
+    if (
+      !(await containerImageReady(
+        this.ecr,
+        this.config.lambda.repositoryUri,
+        `fargate-${spec.arch}`,
+      ))
+    ) {
+      throw new NotReadyError(
+        'fargate',
+        `the ${spec.arch} Fargate runner image is still being built`,
+      );
+    }
     const taskDefinition =
       spec.arch === 'arm64' ? this.config.fargate.taskDefArm64 : this.config.fargate.taskDefX64;
     try {

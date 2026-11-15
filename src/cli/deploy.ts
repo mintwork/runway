@@ -131,18 +131,47 @@ async function waitForApp(
 }
 
 /** Follow the builds the maintainer started (recorded in the image registry). */
-async function waitForImages(t: Target, ssm: SSMClient, after: number): Promise<ImageRegistry> {
+/** Start the image builds now (the maintainer does the work) and surface any error it hits. */
+async function startBuilds(t: Target, maintainer: string): Promise<void> {
+  const res = await new LambdaClient({ region: t.region }).send(
+    new InvokeCommand({
+      FunctionName: maintainer,
+      Payload: Buffer.from(JSON.stringify({ force: true })),
+    }),
+  );
+  if (res.FunctionError) {
+    const detail = Buffer.from(res.Payload ?? []).toString();
+    throw new CliError(
+      `Starting the image builds failed: ${detail.slice(0, 400)}\n    Maintainer logs: /aws/lambda/${maintainer}`,
+    );
+  }
+}
+
+async function waitForImages(
+  t: Target,
+  ssm: SSMClient,
+  after: number,
+  maintainer: string,
+): Promise<ImageRegistry> {
   const microvms = new LambdaMicrovmsClient({ region: t.region });
   const codebuild = new CodeBuildClient({ region: t.region });
   const p = progress('Building runner images');
   const deadline = Date.now() + 75 * 60_000;
   let registry: ImageRegistry | undefined;
   const done = new Map<string, string>();
+  const waitingSince = Date.now();
+  let startedOurselves = false;
   while (Date.now() < deadline) {
     registry = await readRegistry(ssm, imagesParam(t.stack));
     const build = registry?.build;
     if (!registry || !build || Date.parse(build.startedAt) < after) {
-      p.update('starting');
+      // The stack starts the first builds in the background; if nothing shows up, start them
+      // here, where an error can be seen, instead of waiting forever.
+      if (!startedOurselves && Date.now() - waitingSince > 2 * 60_000) {
+        startedOurselves = true;
+        p.update('starting the builds');
+        await startBuilds(t, maintainer);
+      } else p.update('starting');
       await sleep(5000);
       continue;
     }
@@ -294,23 +323,14 @@ export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Pro
     // On first setup the stack's bootstrap already started the builds; otherwise start them here.
     if (registry) {
       // The maintainer builds images for setup, updates and the weekly refresh alike.
-      const res = await new LambdaClient({ region: t.region }).send(
-        new InvokeCommand({
-          FunctionName: out.MaintainerFunction,
-          Payload: Buffer.from(JSON.stringify({ force: true })),
-        }),
-      );
-      if (res.FunctionError)
-        throw new CliError(
-          `Starting the image builds failed: ${Buffer.from(res.Payload ?? []).toString()}`,
-        );
+      await startBuilds(t, out.MaintainerFunction);
     }
     console.log(usage(opts.defaultCompute));
     if (opts.wait) {
       info(
         'Images take about 10 minutes. Ctrl-C is safe: they keep building, and jobs wait for them.',
       );
-      await waitForImages(t, ssm, registry ? requested : 0);
+      await waitForImages(t, ssm, registry ? requested : 0, out.MaintainerFunction);
     } else ok('Image builds are running; follow them with "runway status"');
   } else {
     ok(
@@ -319,6 +339,6 @@ export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Pro
     console.log(usage(opts.defaultCompute));
   }
   console.log(
-    `  ${mint(bold('runway is ready.'))} ${dim('Check on it any time with: npx @mintwork/runway status')}\n`,
+    `  ${mint(bold('runway is ready.'))} ${dim('Check on it any time with: npx -y @mintwork/runway status')}\n`,
   );
 }

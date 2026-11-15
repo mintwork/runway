@@ -10,10 +10,10 @@ const HELP = `
   ${bold('runway')} ${dim(`v${__RUNWAY_VERSION__}`)}: run GitHub Actions jobs on your own AWS compute.
 
   ${bold('Usage')}
-    npx @mintwork/runway setup --owner <github-org-or-user> --region <aws-region>
-    npx @mintwork/runway status
-    npx @mintwork/runway update [--rebuild-images]
-    npx @mintwork/runway destroy
+    npx -y @mintwork/runway setup --owner <github-org-or-user> --region <aws-region>
+    npx -y @mintwork/runway status
+    npx -y @mintwork/runway update [--rebuild-images]
+    npx -y @mintwork/runway destroy
 
   ${bold('Then, in any workflow')}
     runs-on: [runway]                       default compute (Lambda MicroVM unless you change it)
@@ -114,7 +114,7 @@ async function main(argv: string[]): Promise<void> {
     case 'destroy':
       return destroy({ ...common, yes: values.yes as boolean });
     default:
-      throw new CliError(`Unknown command "${command}". Run: npx @mintwork/runway --help`);
+      throw new CliError(`Unknown command "${command}". Run: npx -y @mintwork/runway --help`);
   }
 }
 

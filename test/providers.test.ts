@@ -4,6 +4,7 @@ import {
   RunInstancesCommand,
   TerminateInstancesCommand,
 } from '@aws-sdk/client-ec2';
+import { DescribeImagesCommand, ECRClient } from '@aws-sdk/client-ecr';
 import { ECSClient, RunTaskCommand } from '@aws-sdk/client-ecs';
 import {
   CreateFunctionCommand,
@@ -13,6 +14,7 @@ import {
   PutFunctionEventInvokeConfigCommand,
 } from '@aws-sdk/client-lambda';
 import {
+  GetMicrovmImageCommand,
   LambdaMicrovmsClient,
   RunMicrovmCommand,
   TerminateMicrovmCommand,
@@ -27,7 +29,15 @@ import { Ec2Provider, userData } from '../src/providers/ec2.js';
 import { FargateProvider } from '../src/providers/fargate.js';
 import { LambdaProvider } from '../src/providers/lambda.js';
 import { MicrovmProvider } from '../src/providers/microvm.js';
-import { CapacityError } from '../src/providers/types.js';
+import { clearReadinessCache } from '../src/providers/readiness.js';
+import { CapacityError, NotReadyError } from '../src/providers/types.js';
+
+const ecr = mockClient(ECRClient);
+beforeEach(() => {
+  clearReadinessCache();
+  ecr.reset();
+  ecr.on(DescribeImagesCommand).resolves({ imageDetails: [{ imageTags: ['x'] }] });
+});
 
 const config: Config = loadConfig({
   RUNWAY_STACK: 'runway',
@@ -79,6 +89,28 @@ describe('MicrovmProvider', () => {
   beforeEach(() => {
     mvm.reset();
     s3.reset();
+    mvm.on(GetMicrovmImageCommand).resolves({ latestActiveImageVersion: '3.0' } as never);
+  });
+
+  it('waits (not falls back) while the MicroVM image is still building', async () => {
+    mvm.on(GetMicrovmImageCommand).resolves({ latestActiveImageVersion: undefined } as never);
+    await expect(provider().launch(req(spec('microvm')))).rejects.toBeInstanceOf(NotReadyError);
+    expect(mvm.commandCalls(RunMicrovmCommand)).toHaveLength(0);
+    expect(s3.commandCalls(PutObjectCommand)).toHaveLength(0);
+  });
+
+  it('waits while no images have been recorded yet (right after setup)', async () => {
+    const none = async () => {
+      throw Object.assign(new Error('no parameter'), { name: 'ParameterNotFound' });
+    };
+    const p = new MicrovmProvider(
+      config,
+      none,
+      new LambdaMicrovmsClient({}),
+      new S3Client({}),
+      async () => 'https://x',
+    );
+    await expect(p.launch(req(spec('microvm')))).rejects.toBeInstanceOf(NotReadyError);
   });
   const provider = () =>
     new MicrovmProvider(
@@ -301,6 +333,16 @@ describe('FargateProvider', () => {
     });
   });
 
+  it("waits until the Fargate runner image exists, rather than starting a task that can't pull it", async () => {
+    ecr
+      .on(DescribeImagesCommand)
+      .rejects(Object.assign(new Error('no image'), { name: 'ImageNotFoundException' }));
+    await expect(
+      new FargateProvider(config, new ECSClient({})).launch(req(spec('fargate'))),
+    ).rejects.toBeInstanceOf(NotReadyError);
+    expect(ecs.commandCalls(RunTaskCommand)).toHaveLength(0);
+  });
+
   it('turns RunTask failures into a CapacityError', async () => {
     ecs
       .on(RunTaskCommand)
@@ -393,5 +435,16 @@ describe('webhook toMessage', () => {
       jobId: 1,
     });
     expect(toMessage(event('waiting'))).toBeUndefined();
+  });
+});
+
+describe('MicrovmProvider.listManaged before the first image build', () => {
+  it('reports no MicroVMs instead of failing the sweep', async () => {
+    const none = async () => {
+      throw Object.assign(new Error('no parameter'), { name: 'ParameterNotFound' });
+    };
+    expect(
+      await new MicrovmProvider(config, none, new LambdaMicrovmsClient({})).listManaged(),
+    ).toEqual([]);
   });
 });

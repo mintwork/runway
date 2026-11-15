@@ -1,6 +1,6 @@
 {
   "name": "@mintwork/runway",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run GitHub Actions jobs on your own AWS compute: Lambda MicroVMs, EC2 (Spot), Fargate or Lambda. One setup command, then pick the machine with runs-on labels.",
   "keywords": [
     "github-actions",
@@ -55,6 +55,7 @@
     "@aws-sdk/client-codebuild": "^3.1169.0",
     "@aws-sdk/client-dynamodb": "^3.1169.0",
     "@aws-sdk/client-ec2": "^3.1169.0",
+    "@aws-sdk/client-ecr": "^3.1169.0",
     "@aws-sdk/client-ecs": "^3.1169.0",
     "@aws-sdk/client-iam": "^3.1169.0",
     "@aws-sdk/client-lambda": "^3.1169.0",

@@ -1,4 +1,5 @@
 // Shared wiring for the Lambda handlers: real clients, cached secrets and image registry.
+import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { type Config, type ImageRegistry, loadConfig } from '../core/config.js';
 import type { Deps } from '../core/dispatch.js';
@@ -10,6 +11,7 @@ import { LambdaProvider } from '../providers/lambda.js';
 import { MicrovmProvider } from '../providers/microvm.js';
 
 const ssm = new SSMClient({});
+const sqs = new SQSClient({});
 const cache = new Map<string, { value: string; at: number }>();
 
 /** SSM parameters are cached for a minute, so config changes reach warm functions quickly. */
@@ -50,6 +52,14 @@ export async function runtimeDeps(): Promise<Deps> {
         lambda: new LambdaProvider(config, images),
       },
       log,
+      requeue: async (job) => {
+        await sqs.send(
+          new SendMessageCommand({
+            QueueUrl: config.queueUrl,
+            MessageBody: JSON.stringify({ type: 'queued', ...job }),
+          }),
+        );
+      },
     };
   }
   deps.github = github.app;

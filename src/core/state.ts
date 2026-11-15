@@ -27,6 +27,11 @@ export interface RunnerRecord {
   /** The queued job this runner was launched for. GitHub may hand it a different queued job with the same labels. */
   jobId: number;
   runId: number;
+  /** What's needed to queue the job again if its machine dies before taking it. */
+  labels?: string[];
+  private?: boolean;
+  headSha?: string;
+  jobName?: string;
   runnerId?: number;
   /** The job the runner actually picked up (from the in_progress webhook). */
   busyJobId?: number;

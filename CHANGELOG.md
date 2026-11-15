@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1
+
+Fixes found by onboarding from scratch with 0.1.0.
+
+- Jobs queued before the runner images finish building now wait ("still being built") and launch
+  as soon as the image is ready, instead of failing or starting a Fargate task with no image.
+- If a runner's machine stops before it takes its job, the sweeper queues the job again instead of
+  leaving it stuck. Queued jobs are retried for about 90 minutes.
+- The first image build could fail silently (the maintainer couldn't list the custom tools prefix);
+  fixed, and `setup` now starts the builds itself if they haven't started after 2 minutes.
+- The public page shown after installing the App no longer names your org or App.
+- All commands use `npx -y`, so npx doesn't stop to ask before installing.
+
 ## 0.1.0
 
 First release.
