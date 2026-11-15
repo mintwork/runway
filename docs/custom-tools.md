@@ -61,8 +61,8 @@ architectures:
 #!/bin/bash
 set -euo pipefail
 
-# Build tools, Python, and libatomic (the Node.js binaries need it) from Amazon Linux packages.
-dnf install -y --setopt=install_weak_deps=0 gcc gcc-c++ make python3.12 python3.12-pip libatomic
+# Build tools and Python from Amazon Linux packages.
+dnf install -y --setopt=install_weak_deps=0 gcc gcc-c++ make python3.12 python3.12-pip
 
 # Node.js LTS, from nodejs.org, for the right architecture.
 NODE_VERSION=26.13.1

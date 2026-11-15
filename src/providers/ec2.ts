@@ -46,7 +46,7 @@ exec > >(tee -a /var/log/runway.log > /dev/console) 2>&1
 trap 'echo "runway: shutting down"; shutdown -h now' EXIT
 shutdown -h +${i.maxMinutes} "runway: job time limit reached" || true
 
-dnf install -y --setopt=install_weak_deps=0 docker git libicu tar gzip jq unzip python3 >/dev/null
+dnf install -y --setopt=install_weak_deps=0 docker git libicu libatomic tar gzip jq unzip python3 >/dev/null
 systemctl enable --now docker
 id runner >/dev/null 2>&1 || useradd --create-home --groups docker runner
 echo 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/runner

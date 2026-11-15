@@ -15,8 +15,9 @@ case "$(uname -m)" in
 esac
 
 # Minimal AL2023 images ship curl-minimal, coreutils-single and openssl-snapsafe: asking for
-# the full packages conflicts, so only add what's missing. libicu is required by the runner.
-packages="libicu lttng-ust krb5-libs zlib ca-certificates git tar gzip xz unzip zip findutils which jq procps-ng hostname python3 sudo shadow-utils openssh-clients"
+# the full packages conflicts, so only add what's missing. libicu is required by the runner;
+# libatomic by the Node.js builds actions/setup-node installs (GitHub's hosted runners have it).
+packages="libicu libatomic lttng-ust krb5-libs zlib ca-certificates git tar gzip xz unzip zip findutils which jq procps-ng hostname python3 sudo shadow-utils openssh-clients"
 if [ "${WITH_DOCKER:-0}" = 1 ]; then packages="$packages docker iptables-nft"; fi
 dnf install -y --setopt=install_weak_deps=0 $packages
 dnf clean all

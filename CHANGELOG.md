@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Runner images and EC2 runners include `libatomic`, so `actions/setup-node` with Node.js 26 works
+  as it does on GitHub's hosted runners (it failed with exit code 127 on Fargate).
+
 ## 0.2.0
 
 - **No public setup page.** `runway setup` creates the GitHub App from your terminal: it serves the
