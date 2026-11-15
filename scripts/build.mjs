@@ -18,6 +18,9 @@ const bundled = await build({
   entryPoints: Object.fromEntries(functions.map((f) => [f, `src/lambda/${f}.ts`])),
   outdir: 'dist/functions',
   outExtension: { '.js': '.mjs' },
+  // Shared code (mostly the AWS SDK) goes into common chunks instead of six copies.
+  splitting: true,
+  chunkNames: 'chunks/[name]-[hash]',
   bundle: true,
   platform: 'node',
   target: 'node24',

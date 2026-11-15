@@ -7,6 +7,11 @@
 //                  Lambda runner functions, SSM parameters, the data bucket's objects), so
 //                  deleting the stack in the console really uninstalls runway.
 import { randomBytes } from 'node:crypto';
+import {
+  CloudWatchLogsClient,
+  DeleteLogGroupCommand,
+  DescribeLogGroupsCommand,
+} from '@aws-sdk/client-cloudwatch-logs';
 import { CreateServiceLinkedRoleCommand, IAMClient } from '@aws-sdk/client-iam';
 import {
   DeleteFunctionCommand,
@@ -139,6 +144,24 @@ async function cleanUp(): Promise<void> {
     }
     Marker = page.NextMarker;
   } while (Marker);
+  // Lambda creates a log group for each runner function on first use; the stack doesn't own them.
+  const logs = new CloudWatchLogsClient({});
+  let nextToken: string | undefined;
+  do {
+    const page = await logs.send(
+      new DescribeLogGroupsCommand({
+        logGroupNamePrefix: `/aws/lambda/${n.runnerPrefix}`,
+        nextToken,
+      }),
+    );
+    for (const g of page.logGroups ?? []) {
+      if (g.logGroupName)
+        await logs
+          .send(new DeleteLogGroupCommand({ logGroupName: g.logGroupName }))
+          .catch(() => {});
+    }
+    nextToken = page.nextToken;
+  } while (nextToken);
   for (const Name of n.params) await ssm.send(new DeleteParameterCommand({ Name })).catch(() => {});
   let ContinuationToken: string | undefined;
   do {

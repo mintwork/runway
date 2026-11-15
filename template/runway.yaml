@@ -851,6 +851,12 @@ Resources:
               - Effect: Allow
                 Action: [lambda:ListMicrovmImages, lambda:ListMicrovms, lambda:TerminateMicrovm, lambda:DeleteMicrovmImage]
                 Resource: "*"
+              - Effect: Allow
+                Action: [logs:DescribeLogGroups]
+                Resource: "*"
+              - Effect: Allow
+                Action: logs:DeleteLogGroup
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/runway-${AWS::StackName}-runner-*"
               # EC2 Spot needs its service-linked role, which the dispatcher (rightly) can't create.
               - Effect: Allow
                 Action: iam:CreateServiceLinkedRole

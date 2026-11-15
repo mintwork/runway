@@ -45,7 +45,7 @@ role is simplest), and owner rights on the GitHub organization or account.
 **Easiest: in AWS CloudShell.** It's already logged in to your account, so there's nothing to install.
 Open it in the region you want runway in, and paste one line:
 
-[![Open AWS CloudShell](https://img.shields.io/badge/Open-AWS_CloudShell-232F3E?logo=amazonwebservices&logoColor=white)](https://console.aws.amazon.com/cloudshell/home)
+<a href="https://console.aws.amazon.com/cloudshell/home"><img src="https://mintwork.github.io/assets/open-in-cloudshell.svg" alt="Open in AWS CloudShell" width="320" height="60"></a>
 
 ```bash
 npx -y @mintwork/runway setup --owner <github-org-or-user>
