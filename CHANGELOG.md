@@ -8,6 +8,8 @@
   admits only `POST /` from GitHub's webhook ranges. Updating a 0.1.x stack removes them.
 - Setup is run from a terminal on your own machine; the CloudShell instructions are gone (CloudShell
   has no browser to open the local page).
+- When AWS's sign-in service fails (it answers with an error page), the CLI says so instead of
+  telling you to log in again.
 
 ## 0.1.1
 

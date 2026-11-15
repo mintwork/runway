@@ -48,8 +48,14 @@ export async function resolveTarget(region: string | undefined, stack: string): 
     const id = await new STSClient({ region: r }).send(new GetCallerIdentityCommand({}));
     return { region: r, account: id.Account as string, stack };
   } catch (e) {
+    const message = (e as Error).message;
+    // An HTML answer while fetching credentials means AWS's sign-in service is failing, not you.
+    if (/Unexpected token '<'|is not valid JSON/.test(message))
+      throw new CliError(
+        "AWS's sign-in service returned an error page instead of credentials (it may be briefly unavailable). Try again in a few minutes; if it persists, log in again (aws sso login).",
+      );
     throw new CliError(
-      `Can't use your AWS credentials (${(e as Error).message}). Log in first, for example with: aws sso login`,
+      `Can't use your AWS credentials (${message}). Log in first, for example with: aws sso login`,
     );
   }
 }
