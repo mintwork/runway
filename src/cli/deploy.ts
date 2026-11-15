@@ -20,6 +20,7 @@ import * as sources from '../generated/sources.js';
 import {
   appParam,
   deployStack,
+  describeStack,
   ensureBucket,
   getSecureJson,
   imagesParam,
@@ -34,16 +35,63 @@ import { openBrowser, setWebhookUrl, waitForInstallation } from './github-app.js
 import { concurrentMicrovms, readMicrovmQuotas } from './quota.js';
 import { bold, CliError, dim, info, mint, ok, progress, step, warn } from './ui.js';
 
-export interface DeployOptions {
-  region?: string;
-  stack: string;
-  owner?: string;
+/** Stack settings. Left out on the command line, each keeps the stack's current value (or the default). */
+export interface StackSettings {
   defaultCompute: string;
   fallback: string;
   allowPublicRepos: boolean;
   maxJobMinutes: number;
   microvmSizes: string;
   runnerPolicies: string;
+}
+
+export const DEFAULT_SETTINGS: StackSettings = {
+  defaultCompute: 'microvm',
+  fallback: 'microvm:ec2',
+  allowPublicRepos: false,
+  maxJobMinutes: 360,
+  microvmSizes: 'arm64-1cpu',
+  runnerPolicies: '',
+};
+
+/** The stack parameter behind each setting. */
+const SETTING_PARAMS: Record<keyof StackSettings, string> = {
+  defaultCompute: 'DefaultCompute',
+  fallback: 'Fallback',
+  allowPublicRepos: 'AllowPublicRepos',
+  maxJobMinutes: 'MaxJobMinutes',
+  microvmSizes: 'MicrovmSizes',
+  runnerPolicies: 'RunnerPolicyArns',
+};
+
+/** What was passed wins; then what the stack has now (so `update` never resets your options); then the defaults. */
+export function resolveSettings(
+  given: Partial<StackSettings>,
+  current: Record<string, string | undefined>,
+): StackSettings {
+  const out = { ...DEFAULT_SETTINGS };
+  for (const key of Object.keys(SETTING_PARAMS) as (keyof StackSettings)[]) {
+    const now = current[SETTING_PARAMS[key]];
+    const value =
+      given[key] ??
+      (now === undefined
+        ? undefined
+        : key === 'allowPublicRepos'
+          ? now === 'true'
+          : key === 'maxJobMinutes'
+            ? Number(now)
+            : now);
+    if (value !== undefined) (out as Record<string, unknown>)[key] = value;
+  }
+  if (!Number.isInteger(out.maxJobMinutes) || out.maxJobMinutes < 5 || out.maxJobMinutes > 2880)
+    throw new CliError('--max-job-minutes must be a whole number from 5 to 2880');
+  return out;
+}
+
+export interface DeployOptions extends Partial<StackSettings> {
+  region?: string;
+  stack: string;
+  owner?: string;
   runnerTools?: string;
   browser: boolean;
   rebuildImages: boolean;
@@ -56,7 +104,7 @@ function functionsZip(): Uint8Array {
   return readFileSync(new URL('./assets/functions.zip', import.meta.url));
 }
 
-async function preflight(t: Target, opts: DeployOptions): Promise<void> {
+async function preflight(t: Target, opts: StackSettings & { runnerTools?: string }): Promise<void> {
   if (!COMPUTES.includes(opts.defaultCompute as never))
     throw new CliError(`--default-compute must be one of ${COMPUTES.join(', ')}`);
   parseFallback(opts.fallback);
@@ -226,11 +274,16 @@ const usage = (defaultCompute: string) => `
     ${bold('runs-on: [runway, lambda]')}                 ${dim('Lambda function, jobs up to 15 minutes')}
 `;
 
-export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Promise<void> {
-  const t = await resolveTarget(opts.region, opts.stack);
+export async function deploy(given: DeployOptions, mode: 'setup' | 'update'): Promise<void> {
+  const t = await resolveTarget(given.region, given.stack);
   console.log(
     `\n  ${bold(`runway ${mode}`)} ${dim(`· account ${t.account} · ${t.region} · stack ${t.stack}`)}\n`,
   );
+  const current = await describeStack(new CloudFormationClient({ region: t.region }), t.stack);
+  const currentParams = Object.fromEntries(
+    (current?.Parameters ?? []).map((p) => [p.ParameterKey ?? '', p.ParameterValue]),
+  );
+  const opts = { ...given, ...resolveSettings(given, currentParams) };
   await preflight(t, opts);
 
   const ssm = new SSMClient({ region: t.region });

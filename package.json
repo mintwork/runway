@@ -46,7 +46,8 @@
     "check": "npm run typecheck && npm run lint && npm test",
     "prepublishOnly": "npm run build",
     "gen": "node scripts/gen-sources.mjs",
-    "pretest": "node scripts/gen-sources.mjs"
+    "pretest": "node scripts/gen-sources.mjs",
+    "demo:gif": "node scripts/demo-gif.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-api-gateway": "^3.1169.0",
@@ -75,6 +76,7 @@
     "@types/node": "^26.6.6",
     "aws-sdk-client-mock": "^4.1.0",
     "esbuild": "^0.28.2",
+    "playwright-core": "^1.65.1",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   },

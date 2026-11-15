@@ -11,6 +11,7 @@ npm run check        # generate sources + typecheck, biome lint, vitest, Python 
 npm run build        # dist/cli.js, dist/assets/functions.zip, dist/runway.template.yaml
 npm run gen          # regenerate src/generated/sources.ts (also runs before typecheck/test/build)
 node dist/cli.js --help
+npm run demo:gif     # rebuild docs/demo.gif (needs Google Chrome + ffmpeg; replays a real install, no AWS)
 ```
 
 CloudFormation: `pipx install cfn-lint && cfn-lint -- dist/runway.template.yaml` (CI does this).

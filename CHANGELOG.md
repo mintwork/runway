@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`update` keeps your options.** Options you leave out keep the stack's current values instead of
+  going back to the defaults (before, a plain `update` reset `--fallback`, `--runner-policy`,
+  `--allow-public-repos`, `--max-job-minutes`, `--microvm-sizes` and `--default-compute`).
+  `--no-allow-public-repos` turns public repositories off again.
+- README rewritten: demo GIF, a full first workflow, what's on each runner, what setup creates,
+  options table, upgrading, uninstalling and troubleshooting.
+
 ## 0.2.1
 
 - Runner images and EC2 runners include `libatomic`, so `actions/setup-node` with Node.js 26 works

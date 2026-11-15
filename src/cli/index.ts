@@ -22,7 +22,7 @@ const HELP = `
     runs-on: [runway, fargate, x64, 4cpu]   ECS Fargate task, add 16gb / disk-100gb as needed
     runs-on: [runway, lambda]               Lambda function: jobs up to 15 minutes, no Docker
 
-  ${bold('Options')}
+  ${bold('Options')} ${dim('(update keeps the current value of any option you leave out)')}
     --owner <name>            GitHub organization or user whose repositories use runway (setup)
     --region <region>         AWS region (default: AWS_REGION)
     --profile <name>          AWS profile from ~/.aws/config (default: AWS_PROFILE, or the default profile)
@@ -33,7 +33,8 @@ const HELP = `
     --microvm-sizes <list>    MicroVM images to build: arm64-1cpu,arm64-2cpu,arm64-4cpu (default: arm64-1cpu)
     --runner-policy <arns>    IAM managed policies your jobs may use, comma-separated (default: none)
     --runner-tools <file>     a script that installs your tools into the runner images ('none' removes it)
-    --allow-public-repos      allow jobs from public repositories (forks are always refused)
+    --allow-public-repos      allow jobs from public repositories (forks are always refused);
+                              --no-allow-public-repos turns it off again
     --rebuild-images          rebuild runner images now (update)
     --no-wait                 don't wait for image builds to finish
     --no-browser              print links instead of opening the browser
@@ -64,13 +65,15 @@ async function main(argv: string[]): Promise<void> {
       region: { type: 'string' },
       profile: { type: 'string' },
       stack: { type: 'string', default: 'runway' },
-      'default-compute': { type: 'string', default: 'microvm' },
-      fallback: { type: 'string', default: 'microvm:ec2' },
-      'max-job-minutes': { type: 'string', default: '360' },
-      'microvm-sizes': { type: 'string', default: 'arm64-1cpu' },
-      'runner-policy': { type: 'string', default: '' },
+      // No defaults here: left out, a setting keeps the stack's current value (see resolveSettings).
+      'default-compute': { type: 'string' },
+      fallback: { type: 'string' },
+      'max-job-minutes': { type: 'string' },
+      'microvm-sizes': { type: 'string' },
+      'runner-policy': { type: 'string' },
       'runner-tools': { type: 'string' },
-      'allow-public-repos': { type: 'boolean', default: false },
+      'allow-public-repos': { type: 'boolean' },
+      'no-allow-public-repos': { type: 'boolean' },
       'rebuild-images': { type: 'boolean', default: false },
       'no-wait': { type: 'boolean', default: false },
       'no-browser': { type: 'boolean', default: false },
@@ -90,24 +93,20 @@ async function main(argv: string[]): Promise<void> {
   const deployOpts = {
     ...common,
     owner: values.owner,
-    defaultCompute: values['default-compute'] as string,
-    fallback: values.fallback as string,
-    allowPublicRepos: values['allow-public-repos'] as boolean,
-    maxJobMinutes: Number(values['max-job-minutes']),
-    microvmSizes: values['microvm-sizes'] as string,
-    runnerPolicies: values['runner-policy'] as string,
+    defaultCompute: values['default-compute'],
+    fallback: values.fallback,
+    allowPublicRepos: values['no-allow-public-repos']
+      ? false
+      : (values['allow-public-repos'] as boolean | undefined),
+    maxJobMinutes:
+      values['max-job-minutes'] === undefined ? undefined : Number(values['max-job-minutes']),
+    microvmSizes: values['microvm-sizes'],
+    runnerPolicies: values['runner-policy'],
     runnerTools: values['runner-tools'] as string | undefined,
     browser: !values['no-browser'],
     rebuildImages: values['rebuild-images'] as boolean,
     wait: !values['no-wait'],
   };
-  if (
-    !Number.isInteger(deployOpts.maxJobMinutes) ||
-    deployOpts.maxJobMinutes < 5 ||
-    deployOpts.maxJobMinutes > 2880
-  ) {
-    throw new CliError('--max-job-minutes must be a whole number from 5 to 2880');
-  }
   switch (command) {
     case 'setup':
       return deploy(deployOpts, 'setup');
