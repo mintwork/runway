@@ -45,7 +45,7 @@ export function manifest(opts: {
 }) {
   return {
     name: appName(opts.owner, opts.stack),
-    url: 'https://github.com/mintwork/runway#readme',
+    url: 'https://mintwork.github.io/runway/',
     description: 'Runs GitHub Actions jobs on your own AWS compute (runway by mintwork).',
     hook_attributes: { url: opts.webhookUrl, active: true },
     redirect_url: opts.redirectUrl,

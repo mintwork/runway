@@ -9,8 +9,8 @@
 - README rewritten: demo GIF, a full first workflow, what's on each runner, what setup creates,
   options table, upgrading, uninstalling and troubleshooting.
 - New guide: [adding or updating tools later](docs/custom-tools.md#adding-or-updating-tools-later).
-- The docs link in `--help`, on npm and on new GitHub Apps pointed at a page that doesn't exist; it
-  now points at the README.
+- The docs link in `--help`, on npm and on new GitHub Apps pointed at a page that didn't exist yet.
+  [mintwork.github.io/runway](https://mintwork.github.io/runway/) is now live.
 
 ## 0.2.1
 

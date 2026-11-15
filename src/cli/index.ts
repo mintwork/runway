@@ -41,7 +41,7 @@ const HELP = `
     --yes                     don't ask for confirmation (destroy)
     --limit <n>               runners to list (status, default: 15)
 
-  Docs: https://github.com/mintwork/runway#readme
+  Docs: https://mintwork.github.io/runway/
 `;
 
 /** runway needs Node 22+. Older Nodes (some shells ship one) get a command that brings its own. */
