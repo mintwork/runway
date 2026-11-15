@@ -1,5 +1,6 @@
 // `runway setup` and `runway update`: deploy the stack, connect the GitHub App, build images.
 import { readFileSync } from 'node:fs';
+import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { BatchGetBuildsCommand, CodeBuildClient } from '@aws-sdk/client-codebuild';
 import {
@@ -7,7 +8,6 @@ import {
   ListManagedMicrovmImagesCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { S3Client } from '@aws-sdk/client-s3';
-import { ListServiceQuotasCommand, ServiceQuotasClient } from '@aws-sdk/client-service-quotas';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { parseFallback } from '../core/config.js';
 import {
@@ -18,11 +18,13 @@ import {
   writeRegistry,
 } from '../core/images.js';
 import { COMPUTES } from '../core/labels.js';
+import { githubHookCidrs, syncIngress } from '../core/webhook-ingress.js';
 import * as sources from '../generated/sources.js';
 import {
   appParam,
   deployStack,
   ensureBucket,
+  ensureServiceLinkedRoles,
   getSecureJson,
   imagesParam,
   outputs,
@@ -39,6 +41,7 @@ import {
   setWebhookUrl,
   waitForInstallation,
 } from './github-app.js';
+import { concurrentMicrovms, readMicrovmQuotas } from './quota.js';
 import { bold, CliError, dim, info, mint, ok, progress, step, warn } from './ui.js';
 
 export interface DeployOptions {
@@ -80,24 +83,17 @@ async function preflight(t: Target, opts: DeployOptions): Promise<void> {
     return;
   }
   try {
-    const quotas = await new ServiceQuotasClient({ region: t.region }).send(
-      new ListServiceQuotasCommand({ ServiceCode: 'lambda', MaxResults: 100 }),
-    );
-    const mem = quotas.Quotas?.find((q) => q.QuotaName === 'Max allocated ARM_64 MicroVM memory');
-    if (mem?.Value !== undefined) {
-      const smallest = Math.min(
-        ...opts.microvmSizes
-          .split(',')
-          .filter(Boolean)
-          .map((s) => Number(s.match(/(\d)cpu/)?.[1] ?? 1) * 2048),
-      );
-      const concurrent = Math.floor(mem.Value / smallest);
-      if (concurrent < 4) {
+    for (const q of await readMicrovmQuotas(t.region)) {
+      const sizes = opts.microvmSizes.split(',').filter((k) => k.startsWith(q.arch));
+      if (sizes.length === 0) continue;
+      const cpu = Math.min(...sizes.map((k) => Number(k.match(/(\d)cpu/)?.[1] ?? 1)));
+      const concurrent = concurrentMicrovms(q.gb, cpu);
+      if (concurrent < 10) {
         warn(
-          `Your MicroVM memory quota is ${mem.Value} MiB: ${concurrent} MicroVM job${concurrent === 1 ? '' : 's'} at a time. More queue (or use the fallback).`,
+          `Your ${q.arch} MicroVM memory quota is ${q.gb} GB: ${concurrent} ${cpu}cpu MicroVM job${concurrent === 1 ? '' : 's'} at a time. More use the fallback or queue.`,
         );
         info(
-          `Raise "Max allocated ARM_64 MicroVM memory" in Service Quotas (${t.region}) to run more at once.`,
+          `Raise "Max allocated ${q.arch === 'arm64' ? 'ARM_64' : 'X86_64'} MicroVM memory" in Service Quotas (${t.region}) to run more at once.`,
         );
       }
     }
@@ -119,10 +115,16 @@ async function waitForImages(
     for (const [key, arn] of Object.entries(started.microvm)) {
       if (done.has(`microvm ${key}`)) continue;
       const s = await microvmImageState(microvms, arn);
-      if (s.state === 'CREATE_FAILED' || s.state === 'UPDATE_FAILED')
-        done.set(`microvm ${key}`, 'failed');
-      else if ((s.state === 'CREATED' || s.state === 'UPDATED') && s.active)
+      const previous = started.previousMicrovmVersions[key];
+      if (s.failed && s.failed !== previous && (!s.active || s.active === previous)) {
+        done.set(`microvm ${key}`, `failed (version ${s.failed})`);
+      } else if (
+        s.active &&
+        s.active !== previous &&
+        (s.state === 'CREATED' || s.state === 'UPDATED')
+      ) {
         done.set(`microvm ${key}`, 'ok');
+      }
     }
     const builds = await codebuild.send(new BatchGetBuildsCommand({ ids: started.codeBuildIds }));
     for (const b of builds.builds ?? []) {
@@ -165,6 +167,7 @@ export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Pro
   const isOrg = (await ownerType(owner)) === 'Organization';
   ok(`GitHub ${isOrg ? 'organization' : 'user'} ${owner}`);
 
+  await ensureServiceLinkedRoles(t.region);
   const bucket = await ensureBucket(s3, t);
   const functionsKey = await uploadHashed(s3, bucket, 'runway/functions', '.zip', functionsZip());
   const agentKey = await uploadHashed(
@@ -177,6 +180,7 @@ export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Pro
   const templateKey = await uploadHashed(s3, bucket, 'runway/template', '.yaml', sources.template);
   ok(`Uploaded code to s3://${bucket}`);
 
+  const hookCidrs = await githubHookCidrs();
   const cf = new CloudFormationClient({ region: t.region });
   const stack = await deployStack(
     cf,
@@ -193,10 +197,15 @@ export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Pro
       MaxJobMinutes: String(opts.maxJobMinutes),
       MicrovmSizes: opts.microvmSizes,
       RunnerPolicyArns: opts.runnerPolicies,
+      GitHubHookCidrs: hookCidrs.join(','),
     },
   );
   const out = outputs(stack);
-  ok(`Stack ${t.stack} is ready`);
+  // CloudFormation doesn't redeploy a REST API when only its policy changes; do it here.
+  await syncIngress(new APIGatewayClient({ region: t.region }), out.WebhookApiId, hookCidrs, true);
+  ok(
+    `Stack ${t.stack} is ready ${dim(`(webhook accepts GitHub's ${hookCidrs.length} webhook ranges only)`)}`,
+  );
 
   if (!app) {
     app = await createApp({

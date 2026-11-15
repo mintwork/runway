@@ -254,9 +254,9 @@ export function specFor(compute: Compute, from: JobSpec): JobSpec | undefined {
   const want = { cpu: Math.max(from.cpu, 1), mem: Math.max(from.memoryGb, 1) };
   switch (compute) {
     case 'microvm': {
-      if (from.arch !== 'arm64') return undefined;
+      // Whether an image exists for this architecture and size is the provider's call.
       const cpu = MICROVM_CPUS.find((c) => c >= want.cpu && c * 2 >= want.mem);
-      return cpu ? { compute, arch: 'arm64', cpu, memoryGb: cpu * 2, spot: false } : undefined;
+      return cpu ? { compute, arch: from.arch, cpu, memoryGb: cpu * 2, spot: false } : undefined;
     }
     case 'fargate': {
       for (const [c, [min, max]] of Object.entries(FARGATE_MEMORY)) {

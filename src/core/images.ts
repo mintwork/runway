@@ -4,9 +4,12 @@
 import { CodeBuildClient, StartBuildCommand } from '@aws-sdk/client-codebuild';
 import {
   CreateMicrovmImageCommand,
+  DeleteMicrovmImageVersionCommand,
   GetMicrovmImageCommand,
   LambdaMicrovmsClient,
   ListMicrovmImagesCommand,
+  ListMicrovmImageVersionsCommand,
+  ListMicrovmsCommand,
   UpdateMicrovmImageCommand,
 } from '@aws-sdk/client-lambda-microvms';
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
@@ -103,6 +106,8 @@ export const microvmImageName = (stack: string, key: string) => `runway-${stack}
 export interface BuildStarted {
   runner: RunnerRelease;
   microvm: Record<string, string>;
+  /** The version that was active before this build, per image key, so waiting can tell old from new. */
+  previousMicrovmVersions: Record<string, string | undefined>;
   codeBuildIds: string[];
 }
 
@@ -140,6 +145,7 @@ export async function startImageBuilds(
   } while (nextToken);
 
   const microvm: Record<string, string> = {};
+  const previousMicrovmVersions: Record<string, string | undefined> = {};
   for (const key of t.microvmSizes) {
     const [arch, size] = key.split('-');
     const cpu = Number(size.replace('cpu', ''));
@@ -166,6 +172,8 @@ export async function startImageBuilds(
     };
     const arn = existing.get(name);
     if (arn) {
+      previousMicrovmVersions[key] = (await microvmImageState(clients.microvms, arn)).active;
+      await pruneMicrovmVersions(clients.microvms, arn, previousMicrovmVersions[key]);
       await clients.microvms.send(
         new UpdateMicrovmImageCommand({ imageIdentifier: arn, ...common }),
       );
@@ -193,7 +201,7 @@ export async function startImageBuilds(
     );
     if (res.build?.id) codeBuildIds.push(res.build.id);
   }
-  return { runner, microvm, codeBuildIds };
+  return { runner, microvm, previousMicrovmVersions, codeBuildIds };
 }
 
 export async function readRegistry(
@@ -246,4 +254,44 @@ export async function microvmImageState(client: LambdaMicrovmsClient, arn: strin
     active: img.latestActiveImageVersion,
     failed: img.latestFailedImageVersion,
   };
+}
+
+/**
+ * Image versions cost storage, and weekly rebuilds would pile them up. Before a rebuild, delete
+ * every version except the active one, skipping any version a MicroVM is still running on.
+ */
+export async function pruneMicrovmVersions(
+  client: LambdaMicrovmsClient,
+  arn: string,
+  active: string | undefined,
+): Promise<string[]> {
+  const versions: string[] = [];
+  let nextToken: string | undefined;
+  do {
+    const page = await client.send(
+      new ListMicrovmImageVersionsCommand({ imageIdentifier: arn, nextToken }),
+    );
+    for (const v of page.items ?? []) {
+      if (
+        v.imageVersion &&
+        v.imageVersion !== active &&
+        v.state !== 'PENDING' &&
+        v.state !== 'IN_PROGRESS'
+      )
+        versions.push(v.imageVersion);
+    }
+    nextToken = page.nextToken;
+  } while (nextToken);
+  const deleted: string[] = [];
+  for (const version of versions) {
+    const running = await client.send(
+      new ListMicrovmsCommand({ imageIdentifier: arn, imageVersion: version }),
+    );
+    if ((running.items ?? []).some((vm) => vm.state !== 'TERMINATED')) continue;
+    await client.send(
+      new DeleteMicrovmImageVersionCommand({ imageIdentifier: arn, imageVersion: version }),
+    );
+    deleted.push(version);
+  }
+  return deleted;
 }

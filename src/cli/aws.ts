@@ -10,6 +10,7 @@ import {
   type Stack,
   UpdateStackCommand,
 } from '@aws-sdk/client-cloudformation';
+import { CreateServiceLinkedRoleCommand, IAMClient } from '@aws-sdk/client-iam';
 import {
   CreateBucketCommand,
   DeleteBucketCommand,
@@ -17,6 +18,7 @@ import {
   HeadBucketCommand,
   ListObjectVersionsCommand,
   PutBucketEncryptionCommand,
+  PutBucketLifecycleConfigurationCommand,
   PutObjectCommand,
   PutPublicAccessBlockCommand,
   type S3Client,
@@ -58,10 +60,36 @@ export const bucketName = (t: Target) => `runway-${t.stack}-${t.account}-${t.reg
 export const appParam = (stack: string) => `/runway/${stack}/github-app`;
 export const imagesParam = (stack: string) => `/runway/${stack}/images`;
 
+/** Single-use JIT configs handed to MicroVMs are deleted after a day; old code uploads after 90. */
+async function applyLifecycle(s3: S3Client, Bucket: string): Promise<void> {
+  await s3.send(
+    new PutBucketLifecycleConfigurationCommand({
+      Bucket,
+      LifecycleConfiguration: {
+        Rules: [
+          {
+            ID: 'jit-configs',
+            Status: 'Enabled',
+            Filter: { Prefix: 'runway/jit/' },
+            Expiration: { Days: 1 },
+          },
+          {
+            ID: 'old-uploads',
+            Status: 'Enabled',
+            Filter: { Prefix: 'runway/images/microvm-' },
+            Expiration: { Days: 90 },
+          },
+        ],
+      },
+    }),
+  );
+}
+
 export async function ensureBucket(s3: S3Client, t: Target): Promise<string> {
   const Bucket = bucketName(t);
   try {
     await s3.send(new HeadBucketCommand({ Bucket }));
+    await applyLifecycle(s3, Bucket);
     return Bucket;
   } catch (e) {
     if ((e as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode !== 404)
@@ -267,5 +295,20 @@ export async function deleteParam(ssm: SSMClient, name: string): Promise<void> {
     await ssm.send(new DeleteParameterCommand({ Name: name }));
   } catch (e) {
     if ((e as { name?: string }).name !== 'ParameterNotFound') throw e;
+  }
+}
+
+/**
+ * EC2 Spot and ECS need their service-linked roles, which AWS creates on first use, but only
+ * for callers allowed to create IAM roles (the dispatcher deliberately isn't). Create them now.
+ */
+export async function ensureServiceLinkedRoles(region: string): Promise<void> {
+  const iam = new IAMClient({ region });
+  for (const AWSServiceName of ['spot.amazonaws.com', 'ecs.amazonaws.com']) {
+    try {
+      await iam.send(new CreateServiceLinkedRoleCommand({ AWSServiceName }));
+    } catch (e) {
+      if (!/has been taken|already exists/i.test((e as Error).message)) throw e;
+    }
   }
 }

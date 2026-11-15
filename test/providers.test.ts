@@ -17,6 +17,7 @@ import {
   RunMicrovmCommand,
   TerminateMicrovmCommand,
 } from '@aws-sdk/client-lambda-microvms';
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { mockClient } from 'aws-sdk-client-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type Config, type ImageRegistry, loadConfig } from '../src/core/config.js';
@@ -35,6 +36,7 @@ const config: Config = loadConfig({
   RUNWAY_QUEUE_URL: 'q',
   RUNWAY_APP_PARAM: '/runway/runway/github-app',
   RUNWAY_IMAGES_PARAM: '/runway/runway/images',
+  RUNWAY_ASSETS_BUCKET: 'assets',
   RUNWAY_FALLBACK: 'microvm:ec2',
   RUNWAY_SUBNETS: 'subnet-a,subnet-b',
   RUNWAY_SECURITY_GROUP: 'sg-1',
@@ -73,15 +75,33 @@ const awsError = (name: string, message = name) => Object.assign(new Error(messa
 
 describe('MicrovmProvider', () => {
   const mvm = mockClient(LambdaMicrovmsClient);
-  beforeEach(() => mvm.reset());
+  const s3 = mockClient(S3Client);
+  beforeEach(() => {
+    mvm.reset();
+    s3.reset();
+  });
+  const provider = () =>
+    new MicrovmProvider(
+      config,
+      images,
+      new LambdaMicrovmsClient({}),
+      new S3Client({}),
+      async (key) => `https://assets.s3/${key}?sig`,
+    );
 
-  it('runs the image for the size with the JIT config in the run-hook payload', async () => {
+  it('stores the JIT config in S3 and passes only a short-lived URL in the 4 KB run-hook payload', async () => {
     mvm.on(RunMicrovmCommand).resolves({ microvmId: 'vm-1' } as never);
-    const p = new MicrovmProvider(config, images, new LambdaMicrovmsClient({}));
-    expect(await p.launch(req(spec('microvm')))).toEqual({
+    expect(await provider().launch(req(spec('microvm')))).toEqual({
       resourceId: 'vm-1',
       detail: 'arm64-1cpu',
     });
+    const put = s3.commandCalls(PutObjectCommand)[0].args[0].input;
+    expect(put).toMatchObject({
+      Bucket: 'assets',
+      Key: 'runway/jit/runway-abc.json',
+      ServerSideEncryption: 'AES256',
+    });
+    expect(JSON.parse(put.Body as string)).toEqual({ jitConfig: 'JIT' });
     const input = mvm.commandCalls(RunMicrovmCommand)[0].args[0].input;
     expect(input).toMatchObject({
       imageIdentifier: 'arn:image-1cpu',
@@ -90,15 +110,17 @@ describe('MicrovmProvider', () => {
       maximumDurationInSeconds: 3600,
       clientToken: 'runway-abc',
     });
-    expect(JSON.parse(input.runHookPayload as string)).toEqual({
+    const payload = input.runHookPayload as string;
+    expect(JSON.parse(payload)).toEqual({
       runnerName: 'runway-abc',
-      jitConfig: 'JIT',
+      jitUrl: 'https://assets.s3/runway/jit/runway-abc.json?sig',
     });
+    expect(payload).not.toContain('JIT"');
   });
 
   it('caps the session at 8 hours', async () => {
     mvm.on(RunMicrovmCommand).resolves({ microvmId: 'vm-1' } as never);
-    await new MicrovmProvider(config, images, new LambdaMicrovmsClient({})).launch({
+    await provider().launch({
       ...req(spec('microvm')),
       maxSeconds: 48 * 3600,
     });
@@ -111,7 +133,7 @@ describe('MicrovmProvider', () => {
     mvm
       .on(RunMicrovmCommand)
       .rejects(awsError('ServiceQuotaExceededException', 'memory quota exceeded'));
-    const p = new MicrovmProvider(config, images, new LambdaMicrovmsClient({}));
+    const p = provider();
     await expect(p.launch(req(spec('microvm')))).rejects.toBeInstanceOf(CapacityError);
     await expect(p.launch(req(spec('microvm', '4cpu')))).rejects.toThrow(
       'no MicroVM image for arm64-4cpu',

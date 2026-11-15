@@ -49,11 +49,13 @@
     "pretest": "node scripts/gen-sources.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-api-gateway": "^3.1169.0",
     "@aws-sdk/client-cloudformation": "^3.1169.0",
     "@aws-sdk/client-codebuild": "^3.1169.0",
     "@aws-sdk/client-dynamodb": "^3.1169.0",
     "@aws-sdk/client-ec2": "^3.1169.0",
     "@aws-sdk/client-ecs": "^3.1169.0",
+    "@aws-sdk/client-iam": "^3.1169.0",
     "@aws-sdk/client-lambda": "^3.1169.0",
     "@aws-sdk/client-lambda-microvms": "^3.1169.0",
     "@aws-sdk/client-s3": "^3.1169.0",
@@ -62,6 +64,7 @@
     "@aws-sdk/client-ssm": "^3.1169.0",
     "@aws-sdk/client-sts": "^3.1169.0",
     "@aws-sdk/lib-dynamodb": "^3.1169.0",
+    "@aws-sdk/s3-request-presigner": "^3.1169.0",
     "fflate": "^0.8.3"
   },
   "devDependencies": {

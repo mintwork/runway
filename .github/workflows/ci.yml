@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - name: Agent runs on Python 3.9 (Amazon Linux 2023)
+        run: python3 -c "import ast; ast.parse(open('agent/runway_agent.py').read(), feature_version=(3, 9))"
+      - name: Package contents
+        run: npm pack --dry-run
+
+  template:
+    name: CloudFormation template
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: node scripts/gen-sources.mjs
+      - run: pipx install cfn-lint
+      - run: cfn-lint --regions us-east-1 eu-central-1 -- dist/runway.template.yaml
+
+  images:
+    name: Runner images (${{ matrix.kind }})
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [fargate, lambda]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the ${{ matrix.kind }} image and run the runner in it
+        run: |
+          set -euo pipefail
+          release=$(curl -fsSL -H 'accept: application/vnd.github+json' https://api.github.com/repos/actions/runner/releases/latest)
+          version=$(echo "$release" | jq -r .tag_name | sed 's/^v//')
+          digest() { echo "$release" | jq -r ".assets[] | select(.name==\"actions-runner-linux-$1-$version.tar.gz\") | .digest" | sed 's/^sha256://'; }
+          ctx=$(mktemp -d)
+          cp images/install-runner.sh agent/runway_agent.py "$ctx/"
+          cp images/container/Dockerfile.${{ matrix.kind }} "$ctx/Dockerfile"
+          docker build --build-arg RUNNER_VERSION=$version --build-arg RUNNER_SHA256_ARM64=$(digest arm64) --build-arg RUNNER_SHA256_X64=$(digest x64) -t runner "$ctx"
+          docker run --rm --entrypoint /opt/actions-runner/bin/Runner.Listener runner --version

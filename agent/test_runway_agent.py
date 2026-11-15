@@ -142,6 +142,32 @@ class PayloadTest(unittest.TestCase):
     def test_rejects_a_payload_without_a_jit_config(self):
         with self.assertRaises(ValueError):
             agent.parse_run_payload({"runHookPayload": json.dumps({"runnerName": "x"})})
+        with self.assertRaises(ValueError):
+            agent.parse_run_payload({"runHookPayload": json.dumps({"jitUrl": "http://plain-http"})})
+
+    def test_accepts_a_presigned_url_instead(self):
+        body = {"microvmId": "vm-1", "runHookPayload": json.dumps({"jitUrl": "https://s3/x?sig"})}
+        self.assertEqual(agent.parse_run_payload(body)["jitUrl"], "https://s3/x?sig")
+
+    def test_downloads_the_jit_config_and_retries_transient_errors(self):
+        calls = []
+
+        def opener(url, timeout):
+            calls.append(url)
+            if len(calls) == 1:
+                raise OSError("connection reset")
+            return io.BytesIO(json.dumps({"jitConfig": "J"}).encode())
+
+        with mock.patch.object(agent.time, "sleep", lambda s: None):
+            self.assertEqual(agent.fetch_jit_config("https://s3/x", opener=opener), "J")
+        self.assertEqual(len(calls), 2)
+
+    def test_gives_up_after_repeated_failures(self):
+        def opener(url, timeout):
+            raise OSError("down")
+
+        with mock.patch.object(agent.time, "sleep", lambda s: None), self.assertRaises(RuntimeError):
+            agent.fetch_jit_config("https://s3/x", opener=opener, attempts=3)
 
 
 class HookServerTest(unittest.TestCase):

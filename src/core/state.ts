@@ -36,6 +36,17 @@ export interface RunnerRecord {
   ttl: number;
 }
 
+export interface Refusal {
+  pk: string;
+  jobId: number;
+  owner: string;
+  repo: string;
+  labels: string[];
+  reason: string;
+  at: number;
+  ttl: number;
+}
+
 const DAY = 24 * 3600;
 
 export class State {
@@ -65,6 +76,20 @@ export class State {
       if ((e as { name?: string }).name === 'ConditionalCheckFailedException') return false;
       throw e;
     }
+  }
+
+  /** Remember why a job was refused, so `runway status` can say why it's still waiting. */
+  async recordRefusal(refusal: Omit<Refusal, 'pk' | 'ttl'>): Promise<void> {
+    await this.db.send(
+      new PutCommand({
+        TableName: this.table,
+        Item: {
+          ...refusal,
+          pk: `refused#${refusal.jobId}`,
+          ttl: Math.floor(refusal.at / 1000) + 3 * DAY,
+        },
+      }),
+    );
   }
 
   async releaseJob(jobId: number): Promise<void> {

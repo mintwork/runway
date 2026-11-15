@@ -2,12 +2,11 @@
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
-import { ListServiceQuotasCommand, ServiceQuotasClient } from '@aws-sdk/client-service-quotas';
 import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { microvmImageState, readRegistry } from '../core/images.js';
-import type { RunnerRecord } from '../core/state.js';
+import type { Refusal, RunnerRecord } from '../core/state.js';
 import {
   appParam,
   describeStack,
@@ -17,6 +16,7 @@ import {
   resolveTarget,
 } from './aws.js';
 import { installations, type StoredApp } from './github-app.js';
+import { concurrentMicrovms, readMicrovmQuotas } from './quota.js';
 import { bold, CliError, dim, fail, green, ok, red, warn, yellow } from './ui.js';
 
 const ago = (ms: number) => {
@@ -85,14 +85,11 @@ export async function status(opts: {
   }
 
   try {
-    const quotas = await new ServiceQuotasClient({ region: t.region }).send(
-      new ListServiceQuotasCommand({ ServiceCode: 'lambda', MaxResults: 100 }),
-    );
-    const mem = quotas.Quotas?.find((q) => q.QuotaName === 'Max allocated ARM_64 MicroVM memory');
-    if (mem?.Value !== undefined)
+    for (const q of await readMicrovmQuotas(t.region)) {
       console.log(
-        `  ${dim('·')} MicroVM memory quota: ${mem.Value} MiB ${dim(`(${Math.floor(mem.Value / 2048)} x 1cpu MicroVMs at once)`)}`,
+        `  ${dim('·')} ${q.arch} MicroVM memory quota: ${q.gb} GB ${dim(`(${concurrentMicrovms(q.gb, 1)} x 1cpu MicroVMs at once)`)}`,
       );
+    }
   } catch {
     // advisory only
   }
@@ -113,17 +110,21 @@ export async function status(opts: {
 
   const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region: t.region }));
   const items: RunnerRecord[] = [];
+  const refusals: Refusal[] = [];
   let ExclusiveStartKey: Record<string, unknown> | undefined;
   do {
     const page = await db.send(
       new ScanCommand({
         TableName: out.TableName,
-        FilterExpression: 'begins_with(pk, :p)',
-        ExpressionAttributeValues: { ':p': 'runway-' },
+        FilterExpression: 'begins_with(pk, :p) OR begins_with(pk, :r)',
+        ExpressionAttributeValues: { ':p': 'runway-', ':r': 'refused#' },
         ExclusiveStartKey,
       }),
     );
-    items.push(...((page.Items ?? []) as RunnerRecord[]));
+    for (const item of page.Items ?? []) {
+      if (String(item.pk).startsWith('refused#')) refusals.push(item as Refusal);
+      else items.push(item as RunnerRecord);
+    }
     ExclusiveStartKey = page.LastEvaluatedKey;
   } while (ExclusiveStartKey);
   items.sort((a, b) => b.launchedAt - a.launchedAt);
@@ -144,6 +145,18 @@ export async function status(opts: {
       `  ${state} ${r.pk}  ${r.compute.padEnd(7)} ${dim((r.detail ?? '').padEnd(22))} ${r.owner}/${r.repo} job ${r.jobId}  ${dim(ago(r.launchedAt))}`,
     );
     if (r.error && r.state !== 'done') console.log(`            ${red(r.error.slice(0, 160))}`);
+  }
+  if (refusals.length) {
+    refusals.sort((a, b) => b.at - a.at);
+    console.log(
+      `\n  ${bold('Refused jobs')} ${dim('(they wait in GitHub until cancelled or changed)')}`,
+    );
+    for (const r of refusals.slice(0, opts.limit)) {
+      console.log(
+        `  ${red('refused')}  ${r.owner}/${r.repo} job ${r.jobId}  ${dim(`[${r.labels.join(', ')}]`)}  ${dim(ago(r.at))}`,
+      );
+      console.log(`           ${r.reason}`);
+    }
   }
   console.log('');
 }

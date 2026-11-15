@@ -8,6 +8,8 @@ import {
   RunMicrovmCommand,
   TerminateMicrovmCommand,
 } from '@aws-sdk/client-lambda-microvms';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Config, ImageRegistry } from '../core/config.js';
 import {
   CapacityError,
@@ -17,6 +19,10 @@ import {
   type ManagedResource,
   type Provider,
 } from './types.js';
+
+/** RunMicrovm's runHookPayload is limited to 4096 bytes, less than a JIT config, so it goes via S3. */
+export const JIT_URL_SECONDS = 900;
+export const jitKey = (runnerName: string) => `runway/jit/${runnerName}.json`;
 
 /** Lambda MicroVM sessions are capped at 8 hours. */
 export const MICROVM_MAX_SECONDS = 8 * 3600;
@@ -32,6 +38,11 @@ export class MicrovmProvider implements Provider {
     private readonly config: Config,
     private readonly images: () => Promise<ImageRegistry>,
     private readonly client = new LambdaMicrovmsClient({ region: config.region }),
+    private readonly s3 = new S3Client({ region: config.region }),
+    private readonly presign: (key: string) => Promise<string> = (key) =>
+      getSignedUrl(this.s3, new GetObjectCommand({ Bucket: config.assetsBucket, Key: key }), {
+        expiresIn: JIT_URL_SECONDS,
+      }),
   ) {}
 
   async launch(req: LaunchRequest): Promise<Launched> {
@@ -43,6 +54,17 @@ export class MicrovmProvider implements Provider {
         `no MicroVM image for ${key}. Build it with: npx @mintwork/runway update --microvm-sizes ${req.spec.cpu}cpu`,
       );
     }
+    // The JIT config is single-use; the bucket's lifecycle rule deletes leftovers after a day.
+    await this.s3.send(
+      new PutObjectCommand({
+        Bucket: this.config.assetsBucket,
+        Key: jitKey(req.runnerName),
+        Body: JSON.stringify({ jitConfig: req.jitConfig }),
+        ContentType: 'application/json',
+        ServerSideEncryption: 'AES256',
+      }),
+    );
+    const jitUrl = await this.presign(jitKey(req.runnerName));
     try {
       const res = await this.client.send(
         new RunMicrovmCommand({
@@ -52,7 +74,7 @@ export class MicrovmProvider implements Provider {
           logging: {
             cloudWatch: { logGroup: this.config.microvm.logGroup, logStream: req.runnerName },
           },
-          runHookPayload: JSON.stringify({ runnerName: req.runnerName, jitConfig: req.jitConfig }),
+          runHookPayload: JSON.stringify({ runnerName: req.runnerName, jitUrl }),
           maximumDurationInSeconds: Math.min(req.maxSeconds, MICROVM_MAX_SECONDS),
           clientToken: req.runnerName,
         }),

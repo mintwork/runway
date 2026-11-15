@@ -123,31 +123,63 @@ def _group_exists(name):
         return False
 
 
-def start_dockerd():
+def start_dockerd(storage=None):
     """MicroVM images run Docker without systemd; start a fresh daemon for this job.
 
     Started at /run rather than baked into the snapshot: a daemon resumed from a snapshot
-    has stale bridge networking. Returns immediately; a job-started hook waits for it.
+    has stale bridge networking. Its output goes to the agent's log (CloudWatch), and if it
+    exits within a few seconds it is restarted once with the vfs storage driver.
     """
     if not shutil.which("dockerd"):
         return None
-    log("starting dockerd")
-    out = open("/var/log/dockerd.log", "ab")
-    return subprocess.Popen(["dockerd", "--dns", DOCKER_DNS, "--storage-driver", os.environ.get("RUNWAY_DOCKER_STORAGE", "overlay2")], stdout=out, stderr=out)
+    storage = storage or os.environ.get("RUNWAY_DOCKER_STORAGE", "overlay2")
+    log("starting dockerd", storage=storage)
+    proc = subprocess.Popen(["dockerd", "--dns", DOCKER_DNS, "--storage-driver", storage], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    def relay():
+        for raw in iter(proc.stdout.readline, b""):
+            print("dockerd: " + raw.decode("utf-8", "replace").rstrip(), flush=True)
+        code = proc.wait()
+        log("dockerd exited", code=code, storage=storage)
+        if storage != "vfs":
+            start_dockerd("vfs")
+
+    threading.Thread(target=relay, daemon=True).start()
+    return proc
 
 
 def parse_run_payload(body):
-    """/run delivers {"microvmId": ..., "runHookPayload": "<our JSON string>"}."""
+    """/run delivers {"microvmId": ..., "runHookPayload": "<our JSON string>"}.
+
+    The payload carries either the JIT config itself or (since runHookPayload is capped at
+    4096 bytes) a short-lived presigned S3 URL to fetch it from.
+    """
     inner = body.get("runHookPayload")
     payload = {}
     if isinstance(inner, str) and inner.strip():
         payload = json.loads(inner)
     elif isinstance(inner, dict):
         payload = dict(inner)
-    if not payload.get("jitConfig"):
-        raise ValueError("run payload has no jitConfig")
+    if not payload.get("jitConfig") and not payload.get("jitUrl", "").startswith("https://"):
+        raise ValueError("run payload has neither a jitConfig nor an https jitUrl")
     payload["microvmId"] = body.get("microvmId")
     return payload
+
+
+def fetch_jit_config(url, opener=None, attempts=5):
+    """Download the JIT config from its presigned URL, retrying transient network errors."""
+    import urllib.request
+
+    opener = opener or urllib.request.urlopen
+    last = None
+    for attempt in range(attempts):
+        try:
+            with opener(url, timeout=10) as res:
+                return json.loads(res.read())["jitConfig"]
+        except Exception as e:  # noqa: BLE001 - any failure is worth one more try
+            last = e
+            time.sleep(min(2 ** attempt, 8))
+    raise RuntimeError("could not download the JIT config: %s" % last)
 
 
 class HookServer(BaseHTTPRequestHandler):
@@ -188,7 +220,7 @@ class HookServer(BaseHTTPRequestHandler):
             with HookServer.lock:
                 if HookServer.job is not None:
                     return self._reply(409)
-                HookServer.job = Job(self.runner_dir, payload["jitConfig"], max_seconds=env_int("RUNWAY_MAX_SECONDS", 28800), idle_seconds=env_int("RUNWAY_IDLE_SECONDS", 900))
+                HookServer.job = Job(self.runner_dir, payload.get("jitConfig", ""), max_seconds=env_int("RUNWAY_MAX_SECONDS", 28800), idle_seconds=env_int("RUNWAY_IDLE_SECONDS", 900))
             threading.Thread(target=self._run_job, args=(payload,), daemon=True).start()
             return self._reply(200)  # the /run hook has a short budget; the job runs in the background
         if hook == "terminate":
@@ -202,6 +234,12 @@ class HookServer(BaseHTTPRequestHandler):
         log("job starting", runner=payload.get("runnerName"), microvm=payload.get("microvmId"))
         if os.environ.get("RUNWAY_DOCKER") == "1":
             start_dockerd()
+        if not HookServer.job.jit_config:
+            try:
+                HookServer.job.jit_config = fetch_jit_config(payload["jitUrl"])
+            except RuntimeError as e:
+                log("job failed before it started", error=str(e))
+                return
         code = HookServer.job.run()
         # The dispatcher terminates this MicroVM when GitHub reports the job completed.
         log("job finished; waiting for the MicroVM to be terminated", code=code)

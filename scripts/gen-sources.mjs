@@ -21,10 +21,13 @@ export function expandTemplate() {
     .filter((l) => l.trim() && !l.startsWith('#'))
     .map((l) => `          ${l}`)
     .join('\n');
-  return readFileSync('template/runway.yaml', 'utf8').replaceAll(
-    "      Environment: '@@RUNWAY_ENVIRONMENT@@'",
+  const out = readFileSync('template/runway.yaml', 'utf8').replace(
+    /^ {6}Environment: ['"]@@RUNWAY_ENVIRONMENT@@['"]$/gm,
     `      Environment:\n        Variables:\n${env}`,
   );
+  if (out.includes('@@RUNWAY_ENVIRONMENT@@'))
+    throw new Error('template/runway.yaml: an environment placeholder was not expanded');
+  return out;
 }
 
 const read = (path) =>

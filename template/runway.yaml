@@ -53,6 +53,11 @@ Parameters:
   LambdaRuntime:
     Type: String
     Default: nodejs24.x
+  GitHubHookCidrs:
+    Type: CommaDelimitedList
+    Description: >-
+      Source ranges GitHub sends webhooks from (the "hooks" list of https://api.github.com/meta).
+      The runway CLI fills this in, and the maintainer refreshes the API's policy weekly.
 
 Conditions:
   HasRunnerPolicies: !Not [!Equals [!Join ["", !Ref RunnerPolicyArns], ""]]
@@ -524,6 +529,10 @@ Resources:
                     dynamodb:Scan,
                   ]
                 Resource: !GetAtt Table.Arn
+              # MicroVM runners fetch their single-use JIT config from here (runHookPayload is capped at 4 KB)
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/runway/jit/*"
               # Lambda MicroVMs
               - Effect: Allow
                 Action:
@@ -621,11 +630,18 @@ Resources:
                     lambda:ListMicrovmImages,
                     lambda:ListMicrovmImageVersions,
                     lambda:DeleteMicrovmImageVersion,
+                    lambda:ListMicrovms,
                     lambda:TagResource,
                   ]
                 Resource: "*"
               - { Effect: Allow, Action: lambda:PassNetworkConnector, Resource: "*" }
               - { Effect: Allow, Action: iam:PassRole, Resource: !GetAtt MicrovmBuildRole.Arn }
+              - Effect: Allow
+                Action: [apigateway:GET, apigateway:PATCH, apigateway:POST]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${WebhookApi}"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${WebhookApi}/deployments"
+                  - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${WebhookApi}/stages/github"
               - {
                   Effect: Allow,
                   Action: codebuild:StartBuild,
@@ -646,25 +662,59 @@ Resources:
       Role: !GetAtt WebhookRole.Arn
       Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
       Environment: "@@RUNWAY_ENVIRONMENT@@"
-  WebhookUrl:
-    Type: AWS::Lambda::Url
+  # GitHub reaches runway through API Gateway. Its resource policy only admits GitHub's webhook
+  # ranges; the function itself checks every delivery's HMAC signature. The function has no
+  # public permission: only this API may invoke it.
+  WebhookApi:
+    Type: AWS::ApiGateway::RestApi
     Properties:
-      TargetFunctionArn: !GetAtt WebhookFunction.Arn
-      AuthType: NONE
-  WebhookUrlPermission:
-    Type: AWS::Lambda::Permission
+      Name: !Sub "runway-${AWS::StackName}-webhook"
+      Description: runway - GitHub webhook endpoint (GitHub source ranges only)
+      EndpointConfiguration: { Types: [REGIONAL] }
+      DisableExecuteApiEndpoint: false
+      Policy:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: execute-api:Invoke
+            Resource: execute-api:/*
+          - Effect: Deny
+            Principal: "*"
+            Action: execute-api:Invoke
+            Resource: execute-api:/*
+            Condition: { NotIpAddress: { "aws:SourceIp": !Ref GitHubHookCidrs } }
+  WebhookMethod:
+    Type: AWS::ApiGateway::Method
     Properties:
-      FunctionName: !Ref WebhookFunction
-      Action: lambda:InvokeFunctionUrl
-      Principal: "*"
-      FunctionUrlAuthType: NONE
+      RestApiId: !Ref WebhookApi
+      ResourceId: !GetAtt WebhookApi.RootResourceId
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookFunction.Arn}/invocations"
+  WebhookDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: WebhookMethod
+    Properties:
+      RestApiId: !Ref WebhookApi
+  WebhookStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref WebhookApi
+      DeploymentId: !Ref WebhookDeployment
+      StageName: github
+      MethodSettings:
+        - { ResourcePath: /*, HttpMethod: "*", ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100 }
   WebhookInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref WebhookFunction
       Action: lambda:InvokeFunction
-      Principal: "*"
-      InvokedViaFunctionUrl: true
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookApi}/*/POST/"
 
   WorkerFunction:
     Type: AWS::Lambda::Function
@@ -744,7 +794,9 @@ Resources:
 
 Outputs:
   WebhookUrl:
-    Value: !GetAtt WebhookUrl.FunctionUrl
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${WebhookStage}/"
+  WebhookApiId:
+    Value: !Ref WebhookApi
   QueueUrl:
     Value: !Ref Queue
   DeadLetterQueueUrl:

@@ -11,6 +11,7 @@ export interface Config {
   queueUrl: string;
   appParam: string;
   imagesParam: string;
+  assetsBucket: string;
   defaultCompute: Compute;
   allowedOwners: string[];
   allowPublicRepos: boolean;
@@ -64,6 +65,7 @@ export function loadConfig(env: Env = process.env): Config {
     queueUrl: req(env, 'RUNWAY_QUEUE_URL'),
     appParam: req(env, 'RUNWAY_APP_PARAM'),
     imagesParam: req(env, 'RUNWAY_IMAGES_PARAM'),
+    assetsBucket: env.RUNWAY_ASSETS_BUCKET ?? '',
     defaultCompute,
     allowedOwners: list(env.RUNWAY_ALLOWED_OWNERS).map((o) => o.toLowerCase()),
     allowPublicRepos: env.RUNWAY_ALLOW_PUBLIC_REPOS === 'true',

@@ -2,7 +2,11 @@
 // workflow_job events runway cares about, and queues them for the worker. It answers within
 // GitHub's 10-second delivery timeout because the slow part (launching) happens in the worker.
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
-import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import type {
+  APIGatewayProxyEvent,
+  APIGatewayProxyEventV2,
+  APIGatewayProxyResultV2,
+} from 'aws-lambda';
 import { loadConfig } from '../core/config.js';
 import { verifySignature } from '../core/github.js';
 import { hasTrigger } from '../core/labels.js';
@@ -60,18 +64,29 @@ export function toMessage(event: WorkflowJobEvent): QueueMessage | undefined {
 
 const reply = (statusCode: number, body: string): APIGatewayProxyResultV2 => ({ statusCode, body });
 
-export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-  if (event.requestContext.http.method !== 'POST') return reply(405, 'POST only');
+/** API Gateway REST (v1) and HTTP/Function URL (v2) events, with header names lowercased. */
+export function normalize(event: APIGatewayProxyEvent | APIGatewayProxyEventV2) {
+  const method = 'httpMethod' in event ? event.httpMethod : event.requestContext.http.method;
+  const headers = Object.fromEntries(
+    Object.entries(event.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v ?? '']),
+  );
+  const raw = event.body ?? '';
+  const body = event.isBase64Encoded ? Buffer.from(raw, 'base64').toString('utf8') : raw;
+  return { method, headers, body };
+}
+
+export async function handler(
+  event: APIGatewayProxyEvent | APIGatewayProxyEventV2,
+): Promise<APIGatewayProxyResultV2> {
+  const { method, headers, body } = normalize(event);
+  if (method !== 'POST') return reply(405, 'POST only');
   const config = loadConfig();
-  const body = event.isBase64Encoded
-    ? Buffer.from(event.body ?? '', 'base64').toString('utf8')
-    : (event.body ?? '');
   const creds = await appCredentials(config);
-  if (!verifySignature(creds.webhookSecret, body, event.headers['x-hub-signature-256'])) {
-    log('rejected webhook with a bad signature', { delivery: event.headers['x-github-delivery'] });
+  if (!verifySignature(creds.webhookSecret, body, headers['x-hub-signature-256'])) {
+    log('rejected webhook with a bad signature', { delivery: headers['x-github-delivery'] });
     return reply(401, 'bad signature');
   }
-  const kind = event.headers['x-github-event'];
+  const kind = headers['x-github-event'];
   if (kind === 'ping') return reply(200, 'pong');
   if (kind !== 'workflow_job') return reply(202, 'ignored');
 

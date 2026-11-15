@@ -36,6 +36,7 @@ const job: QueuedJob = {
 function fakeState(initial: RunnerRecord[] = []) {
   const runners = new Map(initial.map((r) => [r.pk, { ...r }]));
   const claimed = new Set<number>();
+  const refusals: { jobId: number; reason: string }[] = [];
   return {
     runners,
     claimed,
@@ -54,6 +55,10 @@ function fakeState(initial: RunnerRecord[] = []) {
     update: vi.fn(async (pk: string, fields: Partial<RunnerRecord>) => {
       const r = runners.get(pk);
       if (r) runners.set(pk, { ...r, ...fields });
+    }),
+    refusals,
+    recordRefusal: vi.fn(async function (this: unknown, r: { jobId: number; reason: string }) {
+      refusals.push(r);
     }),
     activeRunners: vi.fn(async () =>
       [...runners.values()].filter((r) => ['launching', 'launched', 'busy'].includes(r.state)),
@@ -179,6 +184,9 @@ describe('handleQueued', () => {
       status: 'rejected',
     });
     expect(bad.state.claimJob).not.toHaveBeenCalled();
+    expect(bad.state.refusals).toMatchObject([
+      { jobId: 11, reason: expect.stringContaining('unknown label "4cpus"') },
+    ]);
   });
 
   it('launches once when GitHub redelivers the webhook', async () => {

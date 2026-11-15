@@ -181,9 +181,17 @@ describe('specFor (fallback sizing)', () => {
   });
 
   it('refuses targets that cannot fit the job', () => {
-    expect(specFor('microvm', spec('fargate', 'x64'))).toBeUndefined();
     expect(specFor('lambda', spec('ec2', '8cpu'))).toBeUndefined();
     expect(specFor('microvm', spec('ec2', 'arm64', '8cpu'))).toBeUndefined();
+  });
+
+  it('keeps the architecture when falling back to a MicroVM', () => {
+    expect(specFor('microvm', spec('fargate', 'x64'))).toMatchObject({
+      compute: 'microvm',
+      arch: 'x64',
+      cpu: 2,
+      memoryGb: 4,
+    });
   });
 
   it('returns the same spec for the same compute', () => {

@@ -23,7 +23,13 @@ export interface Deps {
   github: Pick<GitHubApp, 'createJitRunner' | 'deleteRunner' | 'runIsFromFork' | 'jobStatus'>;
   state: Pick<
     State,
-    'claimJob' | 'releaseJob' | 'putRunner' | 'getRunner' | 'update' | 'activeRunners'
+    | 'claimJob'
+    | 'releaseJob'
+    | 'putRunner'
+    | 'getRunner'
+    | 'update'
+    | 'activeRunners'
+    | 'recordRefusal'
   >;
   providers: Partial<Record<Compute, Provider>>;
   log: (message: string, fields?: Record<string, unknown>) => void;
@@ -63,8 +69,18 @@ export async function handleQueued(job: QueuedJob, deps: Deps): Promise<QueuedOu
 
   const ref: RepoRef = { owner: job.owner, repo: job.repo, ownerIsOrg: job.ownerIsOrg };
   const where = `${job.owner}/${job.repo}`;
-  const reject = (reason: string): QueuedOutcome => {
+  const reject = async (reason: string): Promise<QueuedOutcome> => {
     log('rejected job', { job: job.jobId, repo: where, reason });
+    await state
+      .recordRefusal({
+        jobId: job.jobId,
+        owner: job.owner,
+        repo: job.repo,
+        labels: job.labels,
+        reason,
+        at: now(),
+      })
+      .catch(() => {});
     return { status: 'rejected', reason };
   };
 
