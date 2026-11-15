@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import type { AppCredentials } from '../core/github.js';
 import { appJwt } from '../core/github.js';
-import { CliError, info } from './ui.js';
+import { CliError } from './ui.js';
 
 const API = 'https://api.github.com';
 const headers = {
@@ -17,7 +17,9 @@ export function openBrowser(url: string): void {
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
   try {
     spawn(cmd, args, { stdio: 'ignore', detached: true })
-      .on('error', () => info(`Couldn't open a browser; open the link above.`))
+      .on('error', () => {
+        console.error(`  Couldn't open a browser; open the link above.`);
+      })
       .unref();
   } catch {
     // The URL is printed too.
