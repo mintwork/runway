@@ -1,4 +1,4 @@
-// GitHub App helpers for the CLI. The App itself is created on the stack's setup page.
+// GitHub App helpers for the CLI. The App itself is created by create-app.ts.
 import { spawn } from 'node:child_process';
 import type { AppCredentials } from '../core/github.js';
 import { appJwt } from '../core/github.js';

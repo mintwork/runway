@@ -50,7 +50,7 @@ export async function status(opts: {
 
   const ssm = new SSMClient({ region: t.region });
   const app = await getSecureJson<StoredApp>(ssm, appParam(t.stack));
-  if (!app) fail(`No GitHub App yet. Finish setup here: ${out.SetupUrl}`);
+  if (!app) fail('No GitHub App yet. Finish setup with: npx -y @mintwork/runway setup');
   else {
     try {
       const inst = await installations(app);

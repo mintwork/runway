@@ -1,5 +1,5 @@
-// `runway setup` and `runway update`: deploy the stack, finish setup through the stack's own
-// setup page, and follow the image builds.
+// `runway setup` and `runway update`: deploy the stack, create the GitHub App from this machine,
+// and follow the image builds.
 import { readFileSync } from 'node:fs';
 import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
@@ -24,10 +24,12 @@ import {
   getSecureJson,
   imagesParam,
   outputs,
+  putSecureJson,
   resolveTarget,
   type Target,
   uploadHashed,
 } from './aws.js';
+import { createApp } from './create-app.js';
 import { openBrowser, setWebhookUrl, waitForInstallation } from './github-app.js';
 import { concurrentMicrovms, readMicrovmQuotas } from './quota.js';
 import { bold, CliError, dim, info, mint, ok, progress, step, warn } from './ui.js';
@@ -102,32 +104,32 @@ async function preflight(t: Target, opts: DeployOptions): Promise<void> {
   }
 }
 
-/** Wait for the App: you create it on the stack's setup page, which stores it in SSM. */
-async function waitForApp(
+/** Create the App in your browser through a page served on 127.0.0.1 by this process. */
+async function createGitHubApp(
   ssm: SSMClient,
   stack: string,
-  setupUrl: string,
+  owner: string,
+  isOrg: boolean,
+  webhookUrl: string,
   browser: boolean,
 ): Promise<StoredApp> {
-  step(`Finish setup in your browser: ${setupUrl}`);
-  info('Create the GitHub App there, then install it on the repositories that should use runway.');
-  info('(Works from any browser: copy the link if this machine has none.)');
-  if (browser) openBrowser(setupUrl);
-  const p = progress('Waiting for the GitHub App');
-  const deadline = Date.now() + 30 * 60_000;
-  while (Date.now() < deadline) {
-    const app = await getSecureJson<StoredApp>(ssm, appParam(stack));
-    if (app) {
-      p.done(`Created the GitHub App ${bold(app.slug)}`);
-      return app;
-    }
-    p.update('not created yet');
-    await sleep(3000);
-  }
-  p.done('GitHub App', false);
-  throw new CliError(
-    `The App wasn't created within 30 minutes. Open ${setupUrl} and run "runway status" afterwards.`,
-  );
+  const app = await createApp({
+    owner,
+    isOrg,
+    stack,
+    webhookUrl,
+    onReady: (url) => {
+      step(`Create runway's GitHub App in your browser: ${url}`);
+      info('The page is served by this terminal (127.0.0.1), so open it on this machine.');
+      info('Then install the App on the repositories that should use runway.');
+      if (browser) openBrowser(url);
+    },
+    save: (created) => putSecureJson(ssm, appParam(stack), created),
+  }).catch((e: Error) => {
+    throw new CliError(`Creating the GitHub App failed: ${e.message}. Run setup again.`);
+  });
+  ok(`Created the GitHub App ${bold(app.slug)} ${dim('(its key is stored in SSM)')}`);
+  return app;
 }
 
 /** Follow the builds the maintainer started (recorded in the image registry). */
@@ -307,7 +309,7 @@ export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Pro
   }
 
   if (!app) {
-    app = await waitForApp(ssm, t.stack, out.SetupUrl, opts.browser);
+    app = await createGitHubApp(ssm, t.stack, owner, isOrg, out.WebhookUrl, opts.browser);
     const inst = await waitForInstallation(app, owner);
     ok(
       `Installed on ${inst.account.login} (${inst.repository_selection === 'all' ? 'all repositories' : 'selected repositories'})`,

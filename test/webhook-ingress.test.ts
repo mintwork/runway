@@ -37,11 +37,13 @@ describe('githubHookCidrs', () => {
 });
 
 describe('ingress policy', () => {
-  it('denies every source outside the ranges', () => {
+  it('admits only POST / from the ranges; everything else is denied by default', () => {
     const policy = JSON.parse(ingressPolicy(ranges));
-    expect(policy.Statement[1]).toMatchObject({
-      Effect: 'Deny',
-      Condition: { NotIpAddress: { 'aws:SourceIp': ranges } },
+    expect(policy.Statement).toHaveLength(1);
+    expect(policy.Statement[0]).toMatchObject({
+      Effect: 'Allow',
+      Resource: 'execute-api:/*/POST/',
+      Condition: { IpAddress: { 'aws:SourceIp': ranges } },
     });
   });
 

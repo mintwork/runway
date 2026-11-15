@@ -24,21 +24,17 @@ export async function githubHookCidrs(fetchImpl: Fetch = fetch): Promise<string[
   return hooks;
 }
 
-/**
- * The resource policy: the webhook (POST /) only admits GitHub's webhook ranges; the setup pages
- * (GET /setup) are for your browser and protect themselves with a one-time token.
- */
+/** The resource policy: POST / from GitHub's webhook ranges, nothing else from anywhere. */
 export function ingressPolicy(cidrs: string[]): string {
   return JSON.stringify({
     Version: '2012-10-17',
     Statement: [
-      { Effect: 'Allow', Principal: '*', Action: 'execute-api:Invoke', Resource: 'execute-api:/*' },
       {
-        Effect: 'Deny',
+        Effect: 'Allow',
         Principal: '*',
         Action: 'execute-api:Invoke',
         Resource: 'execute-api:/*/POST/',
-        Condition: { NotIpAddress: { 'aws:SourceIp': cidrs } },
+        Condition: { IpAddress: { 'aws:SourceIp': cidrs } },
       },
     ],
   });
@@ -49,9 +45,9 @@ export function cidrsInPolicy(policy: string | undefined): string[] {
   if (!policy) return [];
   try {
     const doc = JSON.parse(policy.replace(/\\"/g, '"').replace(/\\\//g, '/')) as {
-      Statement?: { Condition?: { NotIpAddress?: { 'aws:SourceIp'?: string | string[] } } }[];
+      Statement?: { Condition?: { IpAddress?: { 'aws:SourceIp'?: string | string[] } } }[];
     };
-    const ips = doc.Statement?.find((s) => s.Condition?.NotIpAddress)?.Condition?.NotIpAddress?.[
+    const ips = doc.Statement?.find((s) => s.Condition?.IpAddress)?.Condition?.IpAddress?.[
       'aws:SourceIp'
     ];
     return Array.isArray(ips) ? ips : ips ? [ips] : [];

@@ -13,7 +13,7 @@ rmSync('dist', { recursive: true, force: true });
 execFileSync(process.execPath, ['scripts/gen-sources.mjs'], { stdio: 'inherit' });
 const define = { __RUNWAY_VERSION__: JSON.stringify(pkg.version) };
 
-const functions = ['webhook', 'worker', 'sweeper', 'maintainer', 'setup', 'bootstrap'];
+const functions = ['webhook', 'worker', 'sweeper', 'maintainer', 'bootstrap'];
 const bundled = await build({
   entryPoints: Object.fromEntries(functions.map((f) => [f, `src/lambda/${f}.ts`])),
   outdir: 'dist/functions',

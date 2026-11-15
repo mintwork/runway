@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- **No public setup page.** `runway setup` creates the GitHub App from your terminal: it serves the
+  page on `127.0.0.1`, GitHub sends the App's key back to the CLI, and the CLI stores it in SSM. The
+  stack's setup page, its Lambda function and the setup token are gone, and the API's policy now
+  admits only `POST /` from GitHub's webhook ranges. Updating a 0.1.x stack removes them.
+- Setup is run from a terminal on your own machine; the CloudShell instructions are gone (CloudShell
+  has no browser to open the local page).
+
 ## 0.1.1
 
 Fixes found by onboarding from scratch with 0.1.0.

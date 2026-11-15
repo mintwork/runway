@@ -1,12 +1,10 @@
 // CloudFormation custom resource (Custom::RunwayBootstrap).
 //
-//   Create/Update: issue a one-time setup token while no GitHub App exists (it becomes the
-//                  stack's SetupUrl output), upload the EC2 agent, and start the first image
-//                  builds. Fast: the builds run on their own (the maintainer starts them).
+//   Create/Update: upload the EC2 agent and start the first image builds. Fast: the builds
+//                  run on their own (the maintainer starts them).
 //   Delete:        remove what runway created outside the stack (MicroVMs and their images,
 //                  Lambda runner functions, SSM parameters, the data bucket's objects), so
 //                  deleting the stack in the console really uninstalls runway.
-import { randomBytes } from 'node:crypto';
 import {
   CloudWatchLogsClient,
   DeleteLogGroupCommand,
@@ -32,12 +30,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import {
-  DeleteParameterCommand,
-  GetParameterCommand,
-  PutParameterCommand,
-  SSMClient,
-} from '@aws-sdk/client-ssm';
+import { DeleteParameterCommand, GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import type { CloudFormationCustomResourceEvent, Context } from 'aws-lambda';
 import { microvmImageName } from '../core/images.js';
 import * as sources from '../generated/sources.js';
@@ -54,7 +47,9 @@ const names = () => {
     bucket: process.env.RUNWAY_ASSETS_BUCKET as string,
     maintainer: `runway-${stack}-maintainer`,
     runnerPrefix: `runway-${stack}-runner-`,
-    params: ['github-app', 'images', 'setup-token'].map((p) => `/runway/${stack}/${p}`),
+    params: ['github-app', 'images'].map((p) => `/runway/${stack}/${p}`),
+    /** Left by 0.1.x, whose setup page lived in the stack. */
+    legacySetupToken: `/runway/${stack}/setup-token`,
   };
 };
 
@@ -66,23 +61,6 @@ async function exists(name: string): Promise<boolean> {
     if ((e as { name?: string }).name === 'ParameterNotFound') return false;
     throw e;
   }
-}
-
-async function getOrCreateSetupToken(stack: string): Promise<string> {
-  const Name = `/runway/${stack}/setup-token`;
-  try {
-    return (
-      (await ssm.send(new GetParameterCommand({ Name, WithDecryption: true }))).Parameter?.Value ??
-      ''
-    );
-  } catch (e) {
-    if ((e as { name?: string }).name !== 'ParameterNotFound') throw e;
-  }
-  const token = randomBytes(24).toString('base64url');
-  await ssm.send(
-    new PutParameterCommand({ Name, Type: 'SecureString', Value: token, Overwrite: false }),
-  );
-  return token;
 }
 
 /** EC2 Spot and ECS create these on first use, but only for callers allowed to create IAM roles. */
@@ -105,8 +83,7 @@ async function createOrUpdate(): Promise<Record<string, string>> {
       Body: sources.agent,
     }),
   );
-  const hasApp = await exists(`/runway/${n.stack}/github-app`);
-  const token = hasApp ? 'done' : await getOrCreateSetupToken(n.stack);
+  await ssm.send(new DeleteParameterCommand({ Name: n.legacySetupToken })).catch(() => {});
   if (!(await exists(`/runway/${n.stack}/images`))) {
     // Fire and forget: image builds take minutes, a custom resource must answer quickly.
     await lambda.send(
@@ -117,7 +94,7 @@ async function createOrUpdate(): Promise<Record<string, string>> {
       }),
     );
   }
-  return { SetupToken: token };
+  return {};
 }
 
 async function cleanUp(): Promise<void> {
@@ -162,7 +139,8 @@ async function cleanUp(): Promise<void> {
     }
     nextToken = page.nextToken;
   } while (nextToken);
-  for (const Name of n.params) await ssm.send(new DeleteParameterCommand({ Name })).catch(() => {});
+  for (const Name of [...n.params, n.legacySetupToken])
+    await ssm.send(new DeleteParameterCommand({ Name })).catch(() => {});
   let ContinuationToken: string | undefined;
   do {
     const page = await s3.send(new ListObjectsV2Command({ Bucket: n.bucket, ContinuationToken }));
@@ -190,8 +168,6 @@ async function respond(
     StackId: event.StackId,
     RequestId: event.RequestId,
     LogicalResourceId: event.LogicalResourceId,
-    // The setup token is an output only you (account users who can read stack outputs) see.
-    NoEcho: false,
     Data: data,
   });
   await fetch(event.ResponseURL, { method: 'PUT', body, headers: { 'content-type': '' } });

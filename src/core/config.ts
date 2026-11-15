@@ -111,7 +111,7 @@ export interface ImageRegistry {
   fargate: Partial<Record<'arm64' | 'x64', string>>;
   lambda: Partial<Record<'arm64' | 'x64', string>>;
   updatedAt: string;
-  /** The latest build, so the CLI and setup page can follow builds the maintainer started. */
+  /** The latest build, so the CLI can follow builds the maintainer started. */
   build?: {
     startedAt: string;
     codeBuildIds: string[];

@@ -42,7 +42,6 @@ export function manifest(opts: {
   stack: string;
   webhookUrl: string;
   redirectUrl: string;
-  setupUrl?: string;
 }) {
   return {
     name: appName(opts.owner, opts.stack),
@@ -50,7 +49,6 @@ export function manifest(opts: {
     description: 'Runs GitHub Actions jobs on your own AWS compute (runway by mintwork).',
     hook_attributes: { url: opts.webhookUrl, active: true },
     redirect_url: opts.redirectUrl,
-    ...(opts.setupUrl ? { setup_url: opts.setupUrl, setup_on_update: true } : {}),
     public: false,
     default_permissions: {
       ...(opts.isOrg ? { organization_self_hosted_runners: 'write' } : { administration: 'write' }),

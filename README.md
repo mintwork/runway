@@ -42,16 +42,8 @@ the job finishes. Nothing runs (or bills) between jobs.
 You need permission to create a CloudFormation stack with IAM roles in your AWS account (an admin
 role is simplest), and owner rights on the GitHub organization or account.
 
-**Easiest: in AWS CloudShell.** It's already logged in to your account, so there's nothing to install.
-Open it in the region you want runway in, and paste one line:
-
-<a href="https://console.aws.amazon.com/cloudshell/home"><img src="https://mintwork.github.io/assets/open-in-cloudshell.svg" alt="Open in AWS CloudShell" width="320" height="60"></a>
-
-```bash
-npx -y @mintwork/runway setup --owner <github-org-or-user>
-```
-
-**Or from any machine with AWS credentials** (your laptop, a CI job), adding the region:
+Run setup from a terminal on your own machine, with AWS credentials for that account (for example
+after `aws login`) and Node.js 22 or newer:
 
 ```bash
 npx -y @mintwork/runway setup --owner <github-org-or-user> --region eu-central-1
@@ -62,10 +54,11 @@ Setup takes about 10 minutes:
 1. The CLI uploads runway's code to a bucket in your account and deploys the runway stack: a webhook,
    a queue, the dispatcher, a VPC and one role per compute type. The stack starts building the
    runner images right away.
-2. The CLI opens the **setup page**, served by your own stack (any browser works, so CloudShell and
-   SSH are fine: open the printed link). It creates runway's GitHub App on your organization in one click, then sends you on to install it on the repositories you choose. GitHub hands the App's
-   private key to your stack, which keeps it in SSM; it never passes through your browser or mintwork.
-3. The CLI (and the setup page) show the images building. Jobs that start earlier wait for them.
+2. The CLI opens a page in your browser, served by the CLI itself on `127.0.0.1`. It creates
+   runway's GitHub App on your organization in one click, then sends you on to install it on the
+   repositories you choose. GitHub hands the App's private key back to the CLI, which stores it in
+   SSM in your account; it never passes through mintwork, and your stack has no setup page.
+3. The CLI shows the images building. Jobs that start earlier wait for them.
 
 Then use `runs-on: [runway]` in any workflow of those repositories. Check on it with
 `npx -y @mintwork/runway status`. Need more tools on the runners? See [custom tools](docs/custom-tools.md).
@@ -135,16 +128,17 @@ GitHub ──workflow_job completed──▶ worker terminates the machine     s
   (_Administration: write_ for personal accounts, which GitHub requires for repository runners),
   _Checks: write_ (to explain refused jobs on the commit), and _Actions: read_ and _Metadata: read_.
   Its private key is an SSM SecureString.
-- **Setup page.** It answers only with your stack's one-time setup token, verifies that GitHub's
-  callback started on that page, and closes once the App exists.
+- **No setup page.** The App is created from your terminal: the CLI serves the page on `127.0.0.1`
+  for the few minutes setup takes, answers only requests carrying the random state it issued, and
+  stops. The stack's only endpoint is the webhook.
 - **Public repositories are refused** unless you pass `--allow-public-repos`, and runs from forks are
   always refused: a pull request from a stranger must never run on your AWS account.
 - **AWS permissions.** Runners get no AWS permissions by default. Give jobs exactly what they need with
   `--runner-policy arn:aws:iam::aws:policy/ReadOnlyAccess,...`. The dispatcher can only terminate
   instances tagged for its own stack.
 - **Network.** Runners accept no inbound connections; they dial out to GitHub and package registries.
-- **Webhook.** API Gateway refuses any source outside GitHub's published webhook ranges (refreshed
-  weekly), and the function rejects any delivery without a valid signature. The webhook secret and the
+- **Webhook.** API Gateway admits only `POST /` from GitHub's published webhook ranges (refreshed
+  weekly) and refuses everything else, and the function rejects any delivery without a valid signature. The webhook secret and the
   App's private key live only in one SSM SecureString.
 
 ## Cost

@@ -8,7 +8,7 @@ Parameters:
   GitHubOwner:
     Type: String
     AllowedPattern: "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$"
-    Description: The GitHub organization or user whose repositories use runway. Setup creates runway's GitHub App there.
+    Description: The GitHub organization or user whose repositories use runway. `runway setup` creates runway's GitHub App there.
   CodeBucket:
     Type: String
     Description: S3 bucket with runway's function code (the runway CLI creates it and uploads the code).
@@ -703,15 +703,12 @@ Resources:
       Policy:
         Version: "2012-10-17"
         Statement:
+          # Only POST / from GitHub's webhook ranges; there is nothing else to reach.
           - Effect: Allow
             Principal: "*"
             Action: execute-api:Invoke
-            Resource: execute-api:/*
-          - Effect: Deny
-            Principal: "*"
-            Action: execute-api:Invoke
             Resource: execute-api:/*/POST/
-            Condition: { NotIpAddress: { "aws:SourceIp": !Ref GitHubHookCidrs } }
+            Condition: { IpAddress: { "aws:SourceIp": !Ref GitHubHookCidrs } }
   WebhookMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -723,45 +720,9 @@ Resources:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
         Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookFunction.Arn}/invocations"
-  # Setup pages for your browser (any IP), protected by a one-time token and closed once setup is done.
-  SetupResource:
-    Type: AWS::ApiGateway::Resource
-    Properties: { RestApiId: !Ref WebhookApi, ParentId: !GetAtt WebhookApi.RootResourceId, PathPart: setup }
-  SetupCallbackResource:
-    Type: AWS::ApiGateway::Resource
-    Properties: { RestApiId: !Ref WebhookApi, ParentId: !Ref SetupResource, PathPart: callback }
-  SetupMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref WebhookApi
-      ResourceId: !Ref SetupResource
-      HttpMethod: GET
-      AuthorizationType: NONE
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SetupFunction.Arn}/invocations"
-  SetupCallbackMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref WebhookApi
-      ResourceId: !Ref SetupCallbackResource
-      HttpMethod: GET
-      AuthorizationType: NONE
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SetupFunction.Arn}/invocations"
-  SetupInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref SetupFunction
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookApi}/*/GET/setup*"
   WebhookDeployment:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: [WebhookMethod, SetupMethod, SetupCallbackMethod]
+    DependsOn: WebhookMethod
     Properties:
       RestApiId: !Ref WebhookApi
   WebhookStage:
@@ -780,53 +741,9 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookApi}/*/POST/"
 
-  SetupLogs:
-    Type: AWS::Logs::LogGroup
-    Properties: { LogGroupName: !Sub "/aws/lambda/runway-${AWS::StackName}-setup", RetentionInDays: !Ref LogRetentionDays }
   BootstrapLogs:
     Type: AWS::Logs::LogGroup
     Properties: { LogGroupName: !Sub "/aws/lambda/runway-${AWS::StackName}-bootstrap", RetentionInDays: !Ref LogRetentionDays }
-  SetupRole:
-    Type: AWS::IAM::Role
-    Properties:
-      Description: The runway setup page creates the GitHub App and stores its credentials with this role.
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }
-      Policies:
-        - PolicyName: setup
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt SetupLogs.Arn }
-              - Effect: Allow
-                Action: [ssm:GetParameter, ssm:PutParameter, ssm:DeleteParameter]
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/github-app"
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/setup-token"
-              - Effect: Allow
-                Action: ssm:GetParameter
-                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/images"
-              - Effect: Allow
-                Action: [kms:Decrypt, kms:Encrypt]
-                Resource: "*"
-                Condition: { StringEquals: { "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com" } }
-              - { Effect: Allow, Action: lambda:GetMicrovmImage, Resource: "*" }
-  SetupFunction:
-    Type: AWS::Lambda::Function
-    DependsOn: SetupLogs
-    Properties:
-      FunctionName: !Sub "runway-${AWS::StackName}-setup"
-      Description: runway - setup page (creates the GitHub App)
-      Runtime: !Ref LambdaRuntime
-      Architectures: [arm64]
-      Handler: setup.handler
-      MemorySize: 256
-      Timeout: 15
-      Role: !GetAtt SetupRole.Arn
-      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref FunctionsKey }
-      Environment: "@@RUNWAY_ENVIRONMENT@@"
   BootstrapRole:
     Type: AWS::IAM::Role
     Properties:
@@ -968,9 +885,6 @@ Resources:
       SourceArn: !GetAtt MaintainerSchedule.Arn
 
 Outputs:
-  SetupUrl:
-    Description: Open this to create runway's GitHub App and see setup progress.
-    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/github/setup?token=${Bootstrap.SetupToken}"
   DataBucket:
     Value: !Ref DataBucket
   WebhookUrl:
