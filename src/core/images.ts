@@ -12,7 +12,7 @@ import {
   ListMicrovmsCommand,
   UpdateMicrovmImageCommand,
 } from '@aws-sdk/client-lambda-microvms';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { GetParameterCommand, PutParameterCommand, type SSMClient } from '@aws-sdk/client-ssm';
 import { strToU8, zipSync } from 'fflate';
 import * as sources from '../generated/sources.js';
@@ -61,7 +61,11 @@ export async function latestCompose(fetchImpl: Fetch = fetch): Promise<string> {
 }
 
 /** The MicroVM build context: Dockerfile (with the runner pinned), agent and helper scripts. */
-export function microvmZip(runner: RunnerRelease, composeVersion: string): Uint8Array {
+export function microvmZip(
+  runner: RunnerRelease,
+  composeVersion: string,
+  runnerTools = '',
+): Uint8Array {
   const dockerfile = sources.microvmDockerfile
     .replace('__RUNNER_VERSION__', runner.version)
     .replace('__RUNNER_SHA256_ARM64__', runner.sha256.arm64)
@@ -72,18 +76,33 @@ export function microvmZip(runner: RunnerRelease, composeVersion: string): Uint8
     'install-runner.sh': strToU8(sources.installRunner),
     'wait-for-docker.sh': [strToU8(sources.waitForDocker), { os: 3, attrs: 0o755 << 16 }],
     'runway_agent.py': strToU8(sources.agent),
+    'runner-tools.sh': strToU8(runnerTools),
   });
 }
 
 /** The CodeBuild source for the Fargate and Lambda images. */
-export function containerZip(): Uint8Array {
+export function containerZip(runnerTools = ''): Uint8Array {
   return zipSync({
     'buildspec.yml': strToU8(sources.buildspec),
     'Dockerfile.fargate': strToU8(sources.fargateDockerfile),
     'Dockerfile.lambda': strToU8(sources.lambdaDockerfile),
     'install-runner.sh': strToU8(sources.installRunner),
     'runway_agent.py': strToU8(sources.agent),
+    'runner-tools.sh': strToU8(runnerTools),
   });
+}
+
+export const RUNNER_TOOLS_KEY = 'runway/custom/runner-tools.sh';
+
+/** Your runner-tools.sh from the data bucket, or '' when you haven't set one. */
+export async function readRunnerTools(s3: S3Client, bucket: string): Promise<string> {
+  try {
+    const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: RUNNER_TOOLS_KEY }));
+    return (await res.Body?.transformToString()) ?? '';
+  } catch (e) {
+    if ((e as { name?: string }).name === 'NoSuchKey') return '';
+    throw e;
+  }
 }
 
 export interface ImageTargets {
@@ -123,15 +142,20 @@ export async function startImageBuilds(
 ): Promise<BuildStarted> {
   const runner = await latestRunner(fetchImpl);
   const compose = await latestCompose(fetchImpl);
+  const runnerTools = await readRunnerTools(clients.s3, t.bucket);
   const microvmKey = `runway/images/microvm-${runner.version}.zip`;
   await clients.s3.send(
-    new PutObjectCommand({ Bucket: t.bucket, Key: microvmKey, Body: microvmZip(runner, compose) }),
+    new PutObjectCommand({
+      Bucket: t.bucket,
+      Key: microvmKey,
+      Body: microvmZip(runner, compose, runnerTools),
+    }),
   );
   await clients.s3.send(
     new PutObjectCommand({
       Bucket: t.bucket,
       Key: 'runway/images/container.zip',
-      Body: containerZip(),
+      Body: containerZip(runnerTools),
     }),
   );
 
@@ -252,6 +276,11 @@ export function registryAfterBuild(
     fargate: { arm64: `${repositoryUri}:fargate-arm64`, x64: `${repositoryUri}:fargate-x64` },
     lambda: { arm64: `${repositoryUri}:lambda-arm64`, x64: `${repositoryUri}:lambda-x64` },
     updatedAt: new Date().toISOString(),
+    build: {
+      startedAt: new Date().toISOString(),
+      codeBuildIds: started.codeBuildIds,
+      previousMicrovmVersions: started.previousMicrovmVersions,
+    },
   };
 }
 

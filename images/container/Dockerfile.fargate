@@ -6,8 +6,8 @@ ARG RUNNER_VERSION
 ARG RUNNER_SHA256_ARM64
 ARG RUNNER_SHA256_X64
 
-COPY install-runner.sh /tmp/install-runner.sh
-RUN WITH_AWSCLI=1 bash /tmp/install-runner.sh && rm /tmp/install-runner.sh
+COPY install-runner.sh runner-tools.sh /tmp/
+RUN WITH_AWSCLI=1 RUNWAY_TARGET=fargate bash /tmp/install-runner.sh && rm /tmp/install-runner.sh /tmp/runner-tools.sh
 COPY runway_agent.py /opt/runway/runway_agent.py
 
 ENV HOME=/root \

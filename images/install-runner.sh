@@ -5,6 +5,7 @@
 #   RUNNER_VERSION, RUNNER_SHA256_ARM64, RUNNER_SHA256_X64   which runner to install (verified)
 #   WITH_DOCKER=1     also install Docker Engine, Buildx and Compose (MicroVM images)
 #   WITH_AWSCLI=1     also install AWS CLI v2
+#   RUNWAY_TARGET     microvm | fargate | lambda (passed on to your runner-tools.sh)
 set -euo pipefail
 
 case "$(uname -m)" in
@@ -41,6 +42,13 @@ if [ "${WITH_AWSCLI:-0}" = 1 ]; then
   unzip -q /tmp/awscliv2.zip -d /tmp
   /tmp/aws/install
   rm -rf /tmp/aws /tmp/awscliv2.zip
+fi
+
+# Your own tools: runner-tools.sh from the stack's data bucket (empty unless you set one with
+# `runway update --runner-tools <file>`). Runs last, as root, with the architecture and target.
+if [ -s /tmp/runner-tools.sh ]; then
+  echo "running runner-tools.sh (${RUNWAY_TARGET:-unknown}, ${arch})"
+  RUNWAY_ARCH="$arch" RUNWAY_TARGET="${RUNWAY_TARGET:-}" bash -euo pipefail /tmp/runner-tools.sh
 fi
 
 echo "installed actions-runner ${RUNNER_VERSION} (${arch})"

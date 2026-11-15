@@ -1,30 +1,20 @@
-// `runway destroy`: remove everything runway created in the account, including what lives
-// outside the stack (Lambda runner functions, MicroVM images, SSM parameters, the bucket).
+// `runway destroy`: delete the stack. Its bootstrap resource removes what runway created outside
+// the stack (MicroVMs and images, Lambda runner functions, SSM parameters, data), then the CLI
+// removes its code bucket. The GitHub App has to be deleted on GitHub (one click).
 import { createInterface } from 'node:readline/promises';
 import { CloudFormationClient } from '@aws-sdk/client-cloudformation';
-import { DeleteFunctionCommand, LambdaClient, ListFunctionsCommand } from '@aws-sdk/client-lambda';
-import {
-  DeleteMicrovmImageCommand,
-  LambdaMicrovmsClient,
-  ListMicrovmImagesCommand,
-  ListMicrovmsCommand,
-  TerminateMicrovmCommand,
-} from '@aws-sdk/client-lambda-microvms';
 import { S3Client } from '@aws-sdk/client-s3';
 import { SSMClient } from '@aws-sdk/client-ssm';
-import { microvmImageName } from '../core/images.js';
+import type { StoredApp } from '../core/app-manifest.js';
 import {
   appParam,
   bucketName,
-  deleteParam,
   deleteStack,
   emptyAndDeleteBucket,
   getSecureJson,
-  imagesParam,
   resolveTarget,
 } from './aws.js';
-import type { StoredApp } from './github-app.js';
-import { bold, CliError, dim, ok, warn } from './ui.js';
+import { bold, CliError, dim, ok } from './ui.js';
 
 export async function destroy(opts: {
   region?: string;
@@ -43,46 +33,13 @@ export async function destroy(opts: {
     rl.close();
     if (answer.trim() !== t.stack) throw new CliError('Cancelled.');
   }
-  const ssm = new SSMClient({ region: t.region });
-  const app = await getSecureJson<StoredApp>(ssm, appParam(t.stack));
-
-  const lambda = new LambdaClient({ region: t.region });
-  const prefix = `runway-${t.stack}-runner-`;
-  let Marker: string | undefined;
-  do {
-    const page = await lambda.send(new ListFunctionsCommand({ Marker }));
-    for (const fn of page.Functions ?? []) {
-      if (fn.FunctionName?.startsWith(prefix)) {
-        await lambda.send(new DeleteFunctionCommand({ FunctionName: fn.FunctionName }));
-        ok(`Deleted runner function ${fn.FunctionName}`);
-      }
-    }
-    Marker = page.NextMarker;
-  } while (Marker);
-
-  const microvms = new LambdaMicrovmsClient({ region: t.region });
-  const images = (await microvms.send(new ListMicrovmImagesCommand({}))).items ?? [];
-  for (const img of images.filter((i) => i.name?.startsWith(microvmImageName(t.stack, '')))) {
-    const vms =
-      (await microvms.send(new ListMicrovmsCommand({ imageIdentifier: img.imageArn }))).items ?? [];
-    for (const vm of vms.filter((v) => v.state !== 'TERMINATED' && v.microvmId)) {
-      await microvms
-        .send(new TerminateMicrovmCommand({ microvmIdentifier: vm.microvmId }))
-        .catch(() => {});
-    }
-    try {
-      await microvms.send(new DeleteMicrovmImageCommand({ imageIdentifier: img.imageArn }));
-      ok(`Deleted MicroVM image ${img.name}`);
-    } catch (e) {
-      warn(`Couldn't delete MicroVM image ${img.name}: ${(e as Error).message}`);
-    }
-  }
-
+  const app = await getSecureJson<StoredApp>(
+    new SSMClient({ region: t.region }),
+    appParam(t.stack),
+  );
   await deleteStack(new CloudFormationClient({ region: t.region }), t.stack);
-  await deleteParam(ssm, imagesParam(t.stack));
-  await deleteParam(ssm, appParam(t.stack));
   await emptyAndDeleteBucket(new S3Client({ region: t.region }), bucketName(t));
-  ok('Deleted parameters and the assets bucket');
+  ok('Deleted the stack, its runners and images, and the code bucket');
 
   if (app) {
     const settings = app.isOrg

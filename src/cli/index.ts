@@ -31,6 +31,7 @@ const HELP = `
     --max-job-minutes <n>     hard time limit per job (default: 360)
     --microvm-sizes <list>    MicroVM images to build: arm64-1cpu,arm64-2cpu,arm64-4cpu (default: arm64-1cpu)
     --runner-policy <arns>    IAM managed policies your jobs may use, comma-separated (default: none)
+    --runner-tools <file>     a script that installs your tools into the runner images ('none' removes it)
     --allow-public-repos      allow jobs from public repositories (forks are always refused)
     --rebuild-images          rebuild runner images now (update)
     --no-wait                 don't wait for image builds to finish
@@ -41,7 +42,19 @@ const HELP = `
   Docs: https://mintwork.github.io/runway/
 `;
 
+/** runway needs Node 22+. Older Nodes (some shells ship one) get a command that brings its own. */
+function checkNode(): void {
+  const major = Number(process.versions.node.split('.')[0]);
+  if (major >= 22) return;
+  console.error(
+    `\n  ${red('!')} runway needs Node.js 22 or newer; this is ${process.version}. Run it with a current Node instead:\n` +
+      `\n    npx -y -p node@26 -p @mintwork/runway runway ${process.argv.slice(2).join(' ')}\n`,
+  );
+  process.exit(1);
+}
+
 async function main(argv: string[]): Promise<void> {
+  checkNode();
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -54,6 +67,7 @@ async function main(argv: string[]): Promise<void> {
       'max-job-minutes': { type: 'string', default: '360' },
       'microvm-sizes': { type: 'string', default: 'arm64-1cpu' },
       'runner-policy': { type: 'string', default: '' },
+      'runner-tools': { type: 'string' },
       'allow-public-repos': { type: 'boolean', default: false },
       'rebuild-images': { type: 'boolean', default: false },
       'no-wait': { type: 'boolean', default: false },
@@ -78,6 +92,7 @@ async function main(argv: string[]): Promise<void> {
     maxJobMinutes: Number(values['max-job-minutes']),
     microvmSizes: values['microvm-sizes'] as string,
     runnerPolicies: values['runner-policy'] as string,
+    runnerTools: values['runner-tools'] as string | undefined,
     browser: !values['no-browser'],
     rebuildImages: values['rebuild-images'] as boolean,
     wait: !values['no-wait'],

@@ -5,6 +5,7 @@ import { LambdaMicrovmsClient } from '@aws-sdk/client-lambda-microvms';
 import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { DynamoDBDocumentClient, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import type { StoredApp } from '../core/app-manifest.js';
 import { microvmImageState, readRegistry } from '../core/images.js';
 import type { Refusal, RunnerRecord } from '../core/state.js';
 import {
@@ -15,7 +16,7 @@ import {
   outputs,
   resolveTarget,
 } from './aws.js';
-import { installations, type StoredApp } from './github-app.js';
+import { installations } from './github-app.js';
 import { concurrentMicrovms, readMicrovmQuotas } from './quota.js';
 import { bold, CliError, dim, fail, green, ok, red, warn, yellow } from './ui.js';
 
@@ -49,7 +50,7 @@ export async function status(opts: {
 
   const ssm = new SSMClient({ region: t.region });
   const app = await getSecureJson<StoredApp>(ssm, appParam(t.stack));
-  if (!app) fail('No GitHub App connected. Run setup again.');
+  if (!app) fail(`No GitHub App yet. Finish setup here: ${out.SetupUrl}`);
   else {
     try {
       const inst = await installations(app);
@@ -67,7 +68,8 @@ export async function status(opts: {
   }
 
   const registry = await readRegistry(ssm, imagesParam(t.stack));
-  if (!registry) fail('No runner images yet. Run: npx @mintwork/runway update --rebuild-images');
+  if (!registry)
+    warn('Runner images are still building (about 10 minutes after the stack is created).');
   else {
     ok(
       `Runner images: actions/runner ${registry.runner.version}, built ${ago(Date.parse(registry.updatedAt))}`,

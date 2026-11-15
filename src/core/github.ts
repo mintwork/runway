@@ -141,6 +141,30 @@ export class GitHubApp {
     return job.status;
   }
 
+  /**
+   * Explain a refused job on its commit, as a failed "runway" check. Needs the App's Checks
+   * permission; Apps created before runway asked for it fail with 403, which callers ignore.
+   */
+  async reportRefusal(
+    installationId: number,
+    ref: RepoRef,
+    headSha: string,
+    jobName: string,
+    reason: string,
+  ): Promise<void> {
+    const token = await this.installationToken(installationId);
+    await this.request('POST', `/repos/${ref.owner}/${ref.repo}/check-runs`, token, {
+      name: `runway: ${jobName}`.slice(0, 100),
+      head_sha: headSha,
+      status: 'completed',
+      conclusion: 'failure',
+      output: {
+        title: 'runway refused this job',
+        summary: `${reason}\n\nThe job waits in GitHub until you cancel it or fix its \`runs-on\`. Labels: https://github.com/mintwork/runway#choosing-the-machine`,
+      },
+    });
+  }
+
   /** True when the workflow run came from a fork (a pull request from someone else's copy). */
   async runIsFromFork(installationId: number, ref: RepoRef, runId: number): Promise<boolean> {
     const token = await this.installationToken(installationId);

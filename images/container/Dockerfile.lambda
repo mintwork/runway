@@ -7,8 +7,8 @@ ARG RUNNER_VERSION
 ARG RUNNER_SHA256_ARM64
 ARG RUNNER_SHA256_X64
 
-COPY install-runner.sh /tmp/install-runner.sh
-RUN bash /tmp/install-runner.sh && rm /tmp/install-runner.sh
+COPY install-runner.sh runner-tools.sh /tmp/
+RUN RUNWAY_TARGET=lambda bash /tmp/install-runner.sh && rm /tmp/install-runner.sh /tmp/runner-tools.sh
 COPY runway_agent.py ${LAMBDA_TASK_ROOT}/runway_agent.py
 
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \

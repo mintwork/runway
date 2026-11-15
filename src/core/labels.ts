@@ -110,8 +110,9 @@ export function parseLabels(rawLabels: string[], defaults: LabelDefaults): Parse
     } else if (INSTANCE_TYPE.test(label)) {
       instanceType = label;
     } else {
+      const hint = suggest(label);
       return fail(
-        `unknown label "${label}". Use a compute type (${COMPUTES.join(', ')}), arm64/x64, ` +
+        `unknown label "${label}".${hint ? ` Did you mean "${hint}"?` : ''} Use a compute type (${COMPUTES.join(', ')}), arm64/x64, ` +
           'a size like 2cpu or 8gb, disk-50gb, spot, or an EC2 instance type like c7g.large',
       );
     }
@@ -297,4 +298,53 @@ export function specFor(compute: Compute, from: JobSpec): JobSpec | undefined {
       };
     }
   }
+}
+
+const WORDS = [...COMPUTES, 'arm64', 'x64', 'spot'];
+
+function distance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+  }
+  return d[a.length][b.length];
+}
+
+/** The label someone probably meant: 4cpus → 4cpu, 16g → 16gb, mircovm → microvm. */
+export function suggest(label: string): string | undefined {
+  const size = /^(\d+)\s*-?\s*(v?cpus?|cores?|vcores?)$/.exec(label);
+  if (size) return `${size[1]}cpu`;
+  const mem = /^(\d+)\s*-?\s*(g|gib|gigs?|gbs)$/.exec(label);
+  if (mem) return `${mem[1]}gb`;
+  const disk =
+    /^(?:disk-?)?(\d+)\s*(?:gb|g)?-?disk$/.exec(label) ?? /^disk-?(\d+)(?:g|gib)?$/.exec(label);
+  if (disk) return `disk-${disk[1]}gb`;
+  const aliases: Record<string, string> = {
+    arm: 'arm64',
+    graviton: 'arm64',
+    x86: 'x64',
+    intel: 'x64',
+    amd: 'x64',
+    ecs: 'fargate',
+    vm: 'microvm',
+    function: 'lambda',
+  };
+  if (aliases[label]) return aliases[label];
+  let best: string | undefined;
+  let bestDistance = 3;
+  for (const w of WORDS) {
+    const dist = distance(label, w);
+    if (dist < bestDistance) {
+      best = w;
+      bestDistance = dist;
+    }
+  }
+  return best;
 }

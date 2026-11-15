@@ -5,18 +5,16 @@ Description: >-
   with runs-on labels. Deployed and updated by `npx @mintwork/runway`.
 
 Parameters:
-  AssetsBucket:
+  GitHubOwner:
     Type: String
-    Description: S3 bucket the runway CLI uploads code and image sources to.
+    AllowedPattern: "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$"
+    Description: The GitHub organization or user whose repositories use runway. Setup creates runway's GitHub App there.
+  CodeBucket:
+    Type: String
+    Description: S3 bucket with runway's function code (the runway CLI creates it and uploads the code).
   FunctionsKey:
     Type: String
-    Description: S3 key of the dispatcher functions zip.
-  AgentKey:
-    Type: String
-    Description: S3 key of the runner agent (downloaded by EC2 runners).
-  AllowedOwners:
-    Type: String
-    Description: Comma-separated GitHub owners (orgs or users) whose jobs may run here.
+    Description: S3 key of runway's function code in CodeBucket.
   AllowPublicRepos:
     Type: String
     Default: "false"
@@ -55,6 +53,7 @@ Parameters:
     Default: nodejs24.x
   GitHubHookCidrs:
     Type: CommaDelimitedList
+    Default: "@@GITHUB_HOOK_CIDRS@@"
     Description: >-
       Source ranges GitHub sends webhooks from (the "hooks" list of https://api.github.com/meta).
       The runway CLI fills this in, and the maintainer refreshes the API's policy weekly.
@@ -122,6 +121,19 @@ Resources:
       Tags: [{ Key: Name, Value: !Sub "runway-${AWS::StackName}-runners" }]
 
   # ---------------------------------------------------------------- state
+  # Runner configs for MicroVMs, image sources, the EC2 agent and your runner-tools.sh script.
+  # Emptied by the Bootstrap resource when the stack is deleted.
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }]
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      LifecycleConfiguration:
+        Rules:
+          - { Id: jit-configs, Status: Enabled, Prefix: runway/jit/, ExpirationInDays: 1 }
+          - { Id: old-image-sources, Status: Enabled, Prefix: runway/images/microvm-, ExpirationInDays: 90 }
   Queue:
     Type: AWS::SQS::Queue
     Properties:
@@ -214,7 +226,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: s3:GetObject
-                Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/runway/images/*"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucket}/runway/images/*"
               - Effect: Allow
                 Action: [logs:CreateLogStream, logs:PutLogEvents]
                 Resource: !GetAtt MicrovmLogs.Arn
@@ -254,7 +266,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: s3:GetObject
-                Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/${AgentKey}"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataBucket}/runway/agent/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataBucket}/runway/custom/*"
   Ec2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties: { Roles: [!Ref Ec2RunnerRole] }
@@ -346,7 +360,7 @@ Resources:
               - {
                   Effect: Allow,
                   Action: s3:GetObject,
-                  Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/runway/images/*",
+                  Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucket}/runway/images/*",
                 }
               - { Effect: Allow, Action: ecr:GetAuthorizationToken, Resource: "*" }
               - Effect: Allow
@@ -371,7 +385,7 @@ Resources:
       Name: !Sub "runway-${AWS::StackName}-arm64"
       Description: Builds the runway Fargate and Lambda runner images for arm64.
       ServiceRole: !GetAtt CodeBuildRole.Arn
-      Source: { Type: S3, Location: !Sub "${AssetsBucket}/runway/images/container.zip" }
+      Source: { Type: S3, Location: !Sub "${DataBucket}/runway/images/container.zip" }
       Artifacts: { Type: NO_ARTIFACTS }
       TimeoutInMinutes: 45
       LogsConfig:
@@ -391,7 +405,7 @@ Resources:
       Name: !Sub "runway-${AWS::StackName}-x64"
       Description: Builds the runway Fargate and Lambda runner images for x64.
       ServiceRole: !GetAtt CodeBuildRole.Arn
-      Source: { Type: S3, Location: !Sub "${AssetsBucket}/runway/images/container.zip" }
+      Source: { Type: S3, Location: !Sub "${DataBucket}/runway/images/container.zip" }
       Artifacts: { Type: NO_ARTIFACTS }
       TimeoutInMinutes: 45
       LogsConfig:
@@ -532,7 +546,7 @@ Resources:
               # MicroVM runners fetch their single-use JIT config from here (runHookPayload is capped at 4 KB)
               - Effect: Allow
                 Action: [s3:PutObject, s3:GetObject]
-                Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/runway/jit/*"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucket}/runway/jit/*"
               # Lambda MicroVMs
               - Effect: Allow
                 Action:
@@ -619,7 +633,7 @@ Resources:
               - {
                   Effect: Allow,
                   Action: s3:PutObject,
-                  Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/runway/images/*",
+                  Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucket}/runway/images/*",
                 }
               - Effect: Allow
                 Action:
@@ -642,6 +656,12 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${WebhookApi}"
                   - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${WebhookApi}/deployments"
                   - !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${WebhookApi}/stages/github"
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucket}/runway/agent/*"
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucket}/runway/custom/*"
               - {
                   Effect: Allow,
                   Action: codebuild:StartBuild,
@@ -660,7 +680,7 @@ Resources:
       MemorySize: 256
       Timeout: 10
       Role: !GetAtt WebhookRole.Arn
-      Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref FunctionsKey }
       Environment: "@@RUNWAY_ENVIRONMENT@@"
   # GitHub reaches runway through API Gateway. Its resource policy only admits GitHub's webhook
   # ranges; the function itself checks every delivery's HMAC signature. The function has no
@@ -682,7 +702,7 @@ Resources:
           - Effect: Deny
             Principal: "*"
             Action: execute-api:Invoke
-            Resource: execute-api:/*
+            Resource: execute-api:/*/POST/
             Condition: { NotIpAddress: { "aws:SourceIp": !Ref GitHubHookCidrs } }
   WebhookMethod:
     Type: AWS::ApiGateway::Method
@@ -695,9 +715,45 @@ Resources:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
         Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookFunction.Arn}/invocations"
+  # Setup pages for your browser (any IP), protected by a one-time token and closed once setup is done.
+  SetupResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: { RestApiId: !Ref WebhookApi, ParentId: !GetAtt WebhookApi.RootResourceId, PathPart: setup }
+  SetupCallbackResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: { RestApiId: !Ref WebhookApi, ParentId: !Ref SetupResource, PathPart: callback }
+  SetupMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebhookApi
+      ResourceId: !Ref SetupResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SetupFunction.Arn}/invocations"
+  SetupCallbackMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebhookApi
+      ResourceId: !Ref SetupCallbackResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SetupFunction.Arn}/invocations"
+  SetupInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SetupFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookApi}/*/GET/setup*"
   WebhookDeployment:
     Type: AWS::ApiGateway::Deployment
-    DependsOn: WebhookMethod
+    DependsOn: [WebhookMethod, SetupMethod, SetupCallbackMethod]
     Properties:
       RestApiId: !Ref WebhookApi
   WebhookStage:
@@ -716,6 +772,111 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookApi}/*/POST/"
 
+  SetupLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/runway-${AWS::StackName}-setup", RetentionInDays: !Ref LogRetentionDays }
+  BootstrapLogs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/runway-${AWS::StackName}-bootstrap", RetentionInDays: !Ref LogRetentionDays }
+  SetupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The runway setup page creates the GitHub App and stores its credentials with this role.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: setup
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt SetupLogs.Arn }
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:PutParameter, ssm:DeleteParameter]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/github-app"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/setup-token"
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/images"
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt]
+                Resource: "*"
+                Condition: { StringEquals: { "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com" } }
+              - { Effect: Allow, Action: lambda:GetMicrovmImage, Resource: "*" }
+  SetupFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: SetupLogs
+    Properties:
+      FunctionName: !Sub "runway-${AWS::StackName}-setup"
+      Description: runway - setup page (creates the GitHub App)
+      Runtime: !Ref LambdaRuntime
+      Architectures: [arm64]
+      Handler: setup.handler
+      MemorySize: 256
+      Timeout: 15
+      Role: !GetAtt SetupRole.Arn
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref FunctionsKey }
+      Environment: "@@RUNWAY_ENVIRONMENT@@"
+  BootstrapRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Sets runway up when the stack is created, and removes what it created outside the stack when it's deleted.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: bootstrap
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [logs:CreateLogStream, logs:PutLogEvents], Resource: !GetAtt BootstrapLogs.Arn }
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:PutParameter, ssm:DeleteParameter]
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/*"
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:Encrypt]
+                Resource: "*"
+                Condition: { StringEquals: { "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com" } }
+              - Effect: Allow
+                Action: [s3:PutObject, s3:ListBucket, s3:DeleteObject]
+                Resource: [!GetAtt DataBucket.Arn, !Sub "${DataBucket.Arn}/*"]
+              - { Effect: Allow, Action: lambda:InvokeFunction, Resource: !GetAtt MaintainerFunction.Arn }
+              - { Effect: Allow, Action: lambda:ListFunctions, Resource: "*" }
+              - Effect: Allow
+                Action: lambda:DeleteFunction
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:runway-${AWS::StackName}-runner-*"
+              - Effect: Allow
+                Action: [lambda:ListMicrovmImages, lambda:ListMicrovms, lambda:TerminateMicrovm, lambda:DeleteMicrovmImage]
+                Resource: "*"
+              # EC2 Spot needs its service-linked role, which the dispatcher (rightly) can't create.
+              - Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition: { StringEquals: { "iam:AWSServiceName": [spot.amazonaws.com, ecs.amazonaws.com] } }
+  BootstrapFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: BootstrapLogs
+    Properties:
+      FunctionName: !Sub "runway-${AWS::StackName}-bootstrap"
+      Description: runway - stack setup and cleanup (CloudFormation custom resource)
+      Runtime: !Ref LambdaRuntime
+      Architectures: [arm64]
+      Handler: bootstrap.handler
+      MemorySize: 512
+      Timeout: 900
+      Role: !GetAtt BootstrapRole.Arn
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref FunctionsKey }
+      Environment: "@@RUNWAY_ENVIRONMENT@@"
+  Bootstrap:
+    Type: Custom::RunwayBootstrap
+    Properties:
+      ServiceToken: !GetAtt BootstrapFunction.Arn
+      # A new code version re-runs bootstrap (refreshes the EC2 agent in the data bucket).
+      FunctionsKey: !Ref FunctionsKey
+
   WorkerFunction:
     Type: AWS::Lambda::Function
     DependsOn: WorkerLogs
@@ -728,7 +889,7 @@ Resources:
       MemorySize: 512
       Timeout: 120
       Role: !GetAtt DispatcherRole.Arn
-      Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref FunctionsKey }
       Environment: "@@RUNWAY_ENVIRONMENT@@"
   WorkerQueueMapping:
     Type: AWS::Lambda::EventSourceMapping
@@ -750,7 +911,7 @@ Resources:
       MemorySize: 512
       Timeout: 120
       Role: !GetAtt DispatcherRole.Arn
-      Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref FunctionsKey }
       Environment: "@@RUNWAY_ENVIRONMENT@@"
   SweeperSchedule:
     Type: AWS::Events::Rule
@@ -775,9 +936,9 @@ Resources:
       Architectures: [arm64]
       Handler: maintainer.handler
       MemorySize: 512
-      Timeout: 300
+      Timeout: 900
       Role: !GetAtt MaintainerRole.Arn
-      Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref FunctionsKey }
       Environment: "@@RUNWAY_ENVIRONMENT@@"
   MaintainerSchedule:
     Type: AWS::Events::Rule
@@ -793,6 +954,11 @@ Resources:
       SourceArn: !GetAtt MaintainerSchedule.Arn
 
 Outputs:
+  SetupUrl:
+    Description: Open this to create runway's GitHub App and see setup progress.
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/github/setup?token=${Bootstrap.SetupToken}"
+  DataBucket:
+    Value: !Ref DataBucket
   WebhookUrl:
     Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${WebhookStage}/"
   WebhookApiId:

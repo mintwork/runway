@@ -18,7 +18,7 @@ phases:
         for kind in fargate lambda; do
           dir="/tmp/build-$kind"
           mkdir -p "$dir"
-          cp install-runner.sh runway_agent.py "$dir/"
+          cp install-runner.sh runner-tools.sh runway_agent.py "$dir/"
           cp "Dockerfile.$kind" "$dir/Dockerfile"
           # Lambda needs a single-platform Docker v2 manifest, not an OCI index.
           docker build --provenance=false $args -t "$REPO_URI:$kind-$ARCH" -t "$REPO_URI:$kind-$ARCH-$RUNNER_VERSION" "$dir"

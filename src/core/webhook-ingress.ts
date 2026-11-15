@@ -24,7 +24,10 @@ export async function githubHookCidrs(fetchImpl: Fetch = fetch): Promise<string[
   return hooks;
 }
 
-/** The resource policy: anyone may call, unless the source is outside GitHub's webhook ranges. */
+/**
+ * The resource policy: the webhook (POST /) only admits GitHub's webhook ranges; the setup pages
+ * (GET /setup) are for your browser and protect themselves with a one-time token.
+ */
 export function ingressPolicy(cidrs: string[]): string {
   return JSON.stringify({
     Version: '2012-10-17',
@@ -34,7 +37,7 @@ export function ingressPolicy(cidrs: string[]): string {
         Effect: 'Deny',
         Principal: '*',
         Action: 'execute-api:Invoke',
-        Resource: 'execute-api:/*',
+        Resource: 'execute-api:/*/POST/',
         Condition: { NotIpAddress: { 'aws:SourceIp': cidrs } },
       },
     ],

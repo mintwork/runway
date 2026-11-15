@@ -14,6 +14,20 @@ const files = {
   template: 'template/runway.yaml',
 };
 
+// GitHub's webhook ranges, baked in as the template's default.
+// The CLI passes fresh ones and the maintainer refreshes the API weekly, so a slightly old list is fine.
+let hookCidrs;
+try {
+  const res = await fetch('https://api.github.com/meta', {
+    headers: { 'user-agent': 'mintwork-runway-build' },
+  });
+  hookCidrs = (await res.json()).hooks;
+  if (!Array.isArray(hookCidrs) || hookCidrs.length === 0) throw new Error('no hooks');
+  writeFileSync('template/github-hook-cidrs.txt', `${hookCidrs.join('\n')}\n`);
+} catch {
+  hookCidrs = readFileSync('template/github-hook-cidrs.txt', 'utf8').split('\n').filter(Boolean);
+}
+
 /** runway.yaml with the shared function environment expanded in place (CloudFormation has no YAML anchors). */
 export function expandTemplate() {
   const env = readFileSync('template/environment.yaml', 'utf8')
@@ -25,9 +39,10 @@ export function expandTemplate() {
     /^ {6}Environment: ['"]@@RUNWAY_ENVIRONMENT@@['"]$/gm,
     `      Environment:\n        Variables:\n${env}`,
   );
-  if (out.includes('@@RUNWAY_ENVIRONMENT@@'))
-    throw new Error('template/runway.yaml: an environment placeholder was not expanded');
-  return out;
+  const withCidrs = out.replace('"@@GITHUB_HOOK_CIDRS@@"', JSON.stringify(hookCidrs.join(',')));
+  if (withCidrs.includes('@@'))
+    throw new Error('template/runway.yaml: a placeholder was not expanded');
+  return withCidrs;
 }
 
 const read = (path) =>

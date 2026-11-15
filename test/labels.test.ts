@@ -5,6 +5,7 @@ import {
   hasTrigger,
   parseLabels,
   specFor,
+  suggest,
 } from '../src/core/labels.js';
 
 const defaults = { compute: 'microvm' as const };
@@ -197,5 +198,22 @@ describe('specFor (fallback sizing)', () => {
   it('returns the same spec for the same compute', () => {
     const s = spec('fargate');
     expect(specFor('fargate', s)).toBe(s);
+  });
+});
+
+describe('suggest', () => {
+  it('fixes common typos in labels', () => {
+    expect(suggest('4cpus')).toBe('4cpu');
+    expect(suggest('8vcpu')).toBe('8cpu');
+    expect(suggest('16g')).toBe('16gb');
+    expect(suggest('disk100')).toBe('disk-100gb');
+    expect(suggest('mircovm')).toBe('microvm');
+    expect(suggest('fargat')).toBe('fargate');
+    expect(suggest('graviton')).toBe('arm64');
+    expect(suggest('x86')).toBe('x64');
+  });
+
+  it('has no suggestion for labels that are not close to anything', () => {
+    expect(suggest('ubuntu-latest')).toBeUndefined();
   });
 });

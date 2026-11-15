@@ -88,6 +88,9 @@ function fakeGitHub() {
     deleteRunner: vi.fn(async () => {}),
     runIsFromFork: vi.fn(async () => false),
     jobStatus: vi.fn(async (_installationId: number, _ref: unknown, _jobId: number) => 'queued'),
+    reportRefusal: vi.fn(
+      async (_i: number, _r: unknown, _sha: string, _name: string, _reason: string) => {},
+    ),
   };
 }
 
@@ -187,6 +190,32 @@ describe('handleQueued', () => {
     expect(bad.state.refusals).toMatchObject([
       { jobId: 11, reason: expect.stringContaining('unknown label "4cpus"') },
     ]);
+  });
+
+  it('explains a refusal on the commit, as a failed check', async () => {
+    const d = deps();
+    await handleQueued(
+      { ...job, labels: ['runway', '4cpus'], headSha: 'abc123', jobName: 'build' },
+      d,
+    );
+    expect(d.github.reportRefusal).toHaveBeenCalledWith(
+      33,
+      { owner: 'acme', repo: 'api', ownerIsOrg: true },
+      'abc123',
+      'build',
+      expect.stringContaining('Did you mean "4cpu"?'),
+    );
+  });
+
+  it('still refuses (and records why) when the check cannot be posted', async () => {
+    const d = deps();
+    d.github.reportRefusal.mockRejectedValue(
+      new Error('403: Resource not accessible by integration'),
+    );
+    expect(await handleQueued({ ...job, private: false, headSha: 'abc' }, d)).toMatchObject({
+      status: 'rejected',
+    });
+    expect(d.state.refusals).toHaveLength(1);
   });
 
   it('launches once when GitHub redelivers the webhook', async () => {

@@ -241,6 +241,29 @@ describe('userData', () => {
     expect(script).toContain('shutdown -h +60');
   });
 
+  it('runs your runner-tools.sh (when there is one) before the runner starts', () => {
+    const withTools = userData({
+      runnerName: 'runway-abc',
+      jitConfig: 'J',
+      arch: 'arm64',
+      runnerVersion: '2.338.2',
+      runnerSha256: 'a'.repeat(64),
+      agentS3Uri: 's3://b/agent.py',
+      runnerToolsS3Uri: 's3://b/runway/custom/runner-tools.sh',
+      maxMinutes: 60,
+    });
+    expect(withTools).toContain(
+      "aws s3 cp --only-show-errors 's3://b/runway/custom/runner-tools.sh' /opt/runner-tools.sh",
+    );
+    expect(withTools).toContain(
+      'RUNWAY_ARCH=arm64 RUNWAY_TARGET=ec2 bash -euo pipefail /opt/runner-tools.sh',
+    );
+    expect(withTools.indexOf('runner-tools.sh')).toBeLessThan(
+      withTools.indexOf('runway_agent.py oneshot'),
+    );
+    expect(script).not.toContain('runner-tools.sh');
+  });
+
   it('verifies the runner download and quotes the JIT config safely', () => {
     expect(script).toContain('actions-runner-linux-x64-2.338.2.tar.gz');
     expect(script).toContain(`echo "${'b'.repeat(64)}  runner.tgz" | sha256sum -c -`);

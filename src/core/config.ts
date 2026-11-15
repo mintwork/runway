@@ -21,7 +21,12 @@ export interface Config {
   subnets: string[];
   securityGroup: string;
   microvm: { execRoleArn: string; egressConnector: string; logGroup: string };
-  ec2: { instanceProfileArn: string; agentS3Uri: string; logGroup: string };
+  ec2: {
+    instanceProfileArn: string;
+    agentS3Uri: string;
+    runnerToolsS3Uri: string;
+    logGroup: string;
+  };
   fargate: { cluster: string; taskDefArm64: string; taskDefX64: string };
   lambda: { roleArn: string; repositoryUri: string; functionPrefix: string };
 }
@@ -81,6 +86,7 @@ export function loadConfig(env: Env = process.env): Config {
     ec2: {
       instanceProfileArn: env.RUNWAY_EC2_INSTANCE_PROFILE ?? '',
       agentS3Uri: env.RUNWAY_EC2_AGENT_URI ?? '',
+      runnerToolsS3Uri: env.RUNWAY_RUNNER_TOOLS_URI ?? '',
       logGroup: env.RUNWAY_EC2_LOG_GROUP ?? '',
     },
     fargate: {
@@ -105,4 +111,10 @@ export interface ImageRegistry {
   fargate: Partial<Record<'arm64' | 'x64', string>>;
   lambda: Partial<Record<'arm64' | 'x64', string>>;
   updatedAt: string;
+  /** The latest build, so the CLI and setup page can follow builds the maintainer started. */
+  build?: {
+    startedAt: string;
+    codeBuildIds: string[];
+    previousMicrovmVersions: Record<string, string | undefined>;
+  };
 }

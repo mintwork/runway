@@ -16,11 +16,17 @@ export interface QueuedJob {
   ownerIsOrg: boolean;
   private: boolean;
   installationId: number;
+  /** The commit the job runs on, for the "runway refused this job" check. */
+  headSha?: string;
+  jobName?: string;
 }
 
 export interface Deps {
   config: Config;
-  github: Pick<GitHubApp, 'createJitRunner' | 'deleteRunner' | 'runIsFromFork' | 'jobStatus'>;
+  github: Pick<
+    GitHubApp,
+    'createJitRunner' | 'deleteRunner' | 'runIsFromFork' | 'jobStatus' | 'reportRefusal'
+  >;
   state: Pick<
     State,
     | 'claimJob'
@@ -81,6 +87,17 @@ export async function handleQueued(job: QueuedJob, deps: Deps): Promise<QueuedOu
         at: now(),
       })
       .catch(() => {});
+    if (job.headSha) {
+      await github
+        .reportRefusal(
+          job.installationId,
+          ref,
+          job.headSha,
+          job.jobName ?? `job ${job.jobId}`,
+          reason,
+        )
+        .catch(() => {});
+    }
     return { status: 'rejected', reason };
   };
 

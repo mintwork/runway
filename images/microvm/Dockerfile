@@ -12,8 +12,8 @@ ARG RUNNER_SHA256_ARM64=__RUNNER_SHA256_ARM64__
 ARG RUNNER_SHA256_X64=__RUNNER_SHA256_X64__
 ARG COMPOSE_VERSION=__COMPOSE_VERSION__
 
-COPY install-runner.sh /tmp/install-runner.sh
-RUN WITH_DOCKER=1 WITH_AWSCLI=1 bash /tmp/install-runner.sh && rm /tmp/install-runner.sh
+COPY install-runner.sh runner-tools.sh /tmp/
+RUN WITH_DOCKER=1 WITH_AWSCLI=1 RUNWAY_TARGET=microvm bash /tmp/install-runner.sh && rm /tmp/install-runner.sh /tmp/runner-tools.sh
 
 # Docker steps wait for the daemon the agent starts at /run (a daemon from the snapshot would
 # have stale networking).

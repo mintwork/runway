@@ -52,6 +52,7 @@ describe('image build contexts', () => {
     expect(Object.keys(files).sort()).toEqual([
       'Dockerfile',
       'install-runner.sh',
+      'runner-tools.sh',
       'runway_agent.py',
       'wait-for-docker.sh',
     ]);
@@ -68,8 +69,16 @@ describe('image build contexts', () => {
       'Dockerfile.lambda',
       'buildspec.yml',
       'install-runner.sh',
+      'runner-tools.sh',
       'runway_agent.py',
     ]);
+  });
+
+  it('includes your runner-tools.sh in both build contexts', () => {
+    const tools = 'dnf install -y jq\n';
+    expect(strFromU8(unzipSync(containerZip(tools))['runner-tools.sh'])).toBe(tools);
+    const runner = { version: '2.338.2', sha256: { arm64: 'a'.repeat(64), x64: 'b'.repeat(64) } };
+    expect(strFromU8(unzipSync(microvmZip(runner, 'v5', tools))['runner-tools.sh'])).toBe(tools);
   });
 });
 

@@ -39,8 +39,19 @@ the job finishes. Nothing runs (or bills) between jobs.
 
 ## Quick start
 
-You need AWS credentials that can create a CloudFormation stack with IAM roles (an admin role is
-simplest) and owner rights on the GitHub organization or account.
+You need permission to create a CloudFormation stack with IAM roles in your AWS account (an admin
+role is simplest), and owner rights on the GitHub organization or account.
+
+**Easiest: in AWS CloudShell.** It's already logged in to your account, so there's nothing to install.
+Open it in the region you want runway in, and paste one line:
+
+[![Open AWS CloudShell](https://img.shields.io/badge/Open-AWS_CloudShell-232F3E?logo=amazonwebservices&logoColor=white)](https://console.aws.amazon.com/cloudshell/home)
+
+```bash
+npx -y @mintwork/runway setup --owner <github-org-or-user>
+```
+
+**Or from any machine with AWS credentials** (your laptop, a CI job), adding the region:
 
 ```bash
 npx @mintwork/runway setup --owner <github-org-or-user> --region eu-central-1
@@ -48,12 +59,16 @@ npx @mintwork/runway setup --owner <github-org-or-user> --region eu-central-1
 
 Setup takes about 10 minutes:
 
-1. Deploys the runway stack: a webhook, a queue, the dispatcher, a VPC and one role per compute type.
-2. Opens GitHub to create runway's GitHub App (one click), then to install it on the repositories you choose.
-3. Builds the runner images in your account (the MicroVM image, plus Fargate and Lambda images for both architectures).
+1. The CLI uploads runway's code to a bucket in your account and deploys the runway stack: a webhook,
+   a queue, the dispatcher, a VPC and one role per compute type. The stack starts building the
+   runner images right away.
+2. The CLI opens the **setup page**, served by your own stack (any browser works, so CloudShell and
+   SSH are fine: open the printed link). It creates runway's GitHub App on your organization in one click, then sends you on to install it on the repositories you choose. GitHub hands the App's
+   private key to your stack, which keeps it in SSM; it never passes through your browser or mintwork.
+3. The CLI (and the setup page) show the images building. Jobs that start earlier wait for them.
 
 Then use `runs-on: [runway]` in any workflow of those repositories. Check on it with
-`npx @mintwork/runway status`.
+`npx @mintwork/runway status`. Need more tools on the runners? See [custom tools](docs/custom-tools.md).
 
 ## Choosing the machine
 
@@ -118,7 +133,10 @@ GitHub ──workflow_job completed──▶ worker terminates the machine     s
   execution environment that the agent discards after the job. Jobs never share a machine.
 - **GitHub permissions.** The App gets only _Self-hosted runners: write_ for organizations
   (_Administration: write_ for personal accounts, which GitHub requires for repository runners),
-  plus _Actions: read_ and _Metadata: read_. Its private key is an SSM SecureString.
+  _Checks: write_ (to explain refused jobs on the commit), and _Actions: read_ and _Metadata: read_.
+  Its private key is an SSM SecureString.
+- **Setup page.** It answers only with your stack's one-time setup token, verifies that GitHub's
+  callback started on that page, and closes once the App exists.
 - **Public repositories are refused** unless you pass `--allow-public-repos`, and runs from forks are
   always refused: a pull request from a stranger must never run on your AWS account.
 - **AWS permissions.** Runners get no AWS permissions by default. Give jobs exactly what they need with
@@ -143,17 +161,20 @@ npx @mintwork/runway setup --owner <org> --region <region>   # first install (sa
 npx @mintwork/runway status                                  # health, images, quota, recent runners and refusals
 npx @mintwork/runway update [--rebuild-images]               # deploy a new version / change options
 npx @mintwork/runway destroy                                 # remove everything runway created
+
+# Deleting the stack in the CloudFormation console also removes everything runway created.
 ```
 
 Options: `--default-compute`, `--fallback`, `--max-job-minutes`, `--microvm-sizes arm64-1cpu,arm64-2cpu`,
-`--runner-policy`, `--allow-public-repos`, `--stack` (several independent setups), `--no-browser`.
+`--runner-policy`, `--runner-tools ./runner-tools.sh`, `--allow-public-repos`, `--stack` (several
+independent setups), `--no-browser`.
 Run `npx @mintwork/runway --help` for all of them.
 
 ## Limits, honestly
 
 - **Images are not GitHub's.** Runner images have git, Docker (MicroVM, EC2), the AWS CLI, Python and
-  the runner's own Node, not GitHub's hundreds of preinstalled tools. Use `actions/setup-node`,
-  `setup-python` and friends, as you would in a container job.
+  the runner's own Node, not GitHub's hundreds of preinstalled tools. Add yours once with a
+  [`runner-tools.sh`](docs/custom-tools.md), or per job with `actions/setup-node` and friends.
 - **One MicroVM image per size and architecture.** Setup builds `arm64-1cpu`; add more with
   `--microvm-sizes arm64-1cpu,arm64-2cpu,x64-1cpu` (x64 needs an x86 MicroVM quota in your account).
   A job asking for a size without an image goes to the fallback.
@@ -162,7 +183,8 @@ Run `npx @mintwork/runway --help` for all of them.
 - **EC2 starts in about a minute** because it installs the runner at boot, and uses the stock Amazon
   Linux AMI: no GPU drivers yet.
 - **A refused job waits in GitHub.** runway can't fail a job it won't run, so a job with a bad label
-  or from a refused repository stays queued until you cancel it. `runway status` lists refusals and why.
+  or from a refused repository stays queued until you cancel it. It does post a failed **runway**
+  check on the commit saying why (with a "did you mean" for typos), and `runway status` lists refusals.
 
 ## How is this different from…
 

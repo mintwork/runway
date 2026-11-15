@@ -32,6 +32,7 @@ export interface UserDataInput {
   runnerVersion: string;
   runnerSha256: string;
   agentS3Uri: string;
+  runnerToolsS3Uri?: string;
   maxMinutes: number;
 }
 
@@ -57,6 +58,14 @@ tar xzf runner.tgz && rm runner.tgz
 chown -R runner:runner /opt/actions-runner
 
 aws s3 cp --only-show-errors ${shellQuote(i.agentS3Uri)} /opt/runway_agent.py
+${
+  i.runnerToolsS3Uri
+    ? `# Your runner-tools.sh, if you set one (runway update --runner-tools <file>).
+if aws s3 cp --only-show-errors ${shellQuote(i.runnerToolsS3Uri)} /opt/runner-tools.sh 2>/dev/null; then
+  RUNWAY_ARCH=${i.arch} RUNWAY_TARGET=ec2 bash -euo pipefail /opt/runner-tools.sh
+fi`
+    : ''
+}
 RUNWAY_RUNNER_NAME=${shellQuote(i.runnerName)} RUNWAY_JIT_CONFIG=${shellQuote(i.jitConfig)} \\
   RUNWAY_RUNNER_DIR=/opt/actions-runner RUNWAY_RUN_AS=runner \\
   python3 /opt/runway_agent.py oneshot
@@ -82,6 +91,7 @@ export class Ec2Provider implements Provider {
       runnerVersion: registry.runner.version,
       runnerSha256: registry.runner.sha256[spec.arch],
       agentS3Uri: this.config.ec2.agentS3Uri,
+      runnerToolsS3Uri: this.config.ec2.runnerToolsS3Uri,
       maxMinutes: Math.ceil(req.maxSeconds / 60),
     });
     const markets: ('spot' | 'on-demand')[] = spec.spot ? ['spot', 'on-demand'] : ['on-demand'];

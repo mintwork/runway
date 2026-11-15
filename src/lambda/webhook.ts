@@ -25,13 +25,22 @@ export type QueueMessage =
       ownerIsOrg: boolean;
       private: boolean;
       installationId: number;
+      headSha?: string;
+      jobName?: string;
     }
   | { type: 'in_progress'; runnerName: string; jobId: number }
   | { type: 'completed'; runnerName: string; jobId: number };
 
 interface WorkflowJobEvent {
   action: string;
-  workflow_job: { id: number; run_id: number; labels: string[]; runner_name?: string | null };
+  workflow_job: {
+    id: number;
+    run_id: number;
+    labels: string[];
+    runner_name?: string | null;
+    head_sha?: string;
+    name?: string;
+  };
   repository: { name: string; private: boolean; owner: { login: string; type: string } };
   installation?: { id: number };
 }
@@ -51,6 +60,8 @@ export function toMessage(event: WorkflowJobEvent): QueueMessage | undefined {
       ownerIsOrg: event.repository.owner.type === 'Organization',
       private: event.repository.private,
       installationId: event.installation.id,
+      headSha: job.head_sha,
+      jobName: job.name,
     };
   }
   if (
