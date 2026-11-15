@@ -1,5 +1,6 @@
 import {
   DeleteMicrovmImageVersionCommand,
+  GetMicrovmImageCommand,
   LambdaMicrovmsClient,
   ListMicrovmImageVersionsCommand,
   ListMicrovmsCommand,
@@ -12,6 +13,7 @@ import {
   latestRunner,
   microvmZip,
   pruneMicrovmVersions,
+  waitForSettledImage,
 } from '../src/core/images.js';
 
 const release = {
@@ -94,5 +96,26 @@ describe('pruneMicrovmVersions', () => {
     expect(
       mvm.commandCalls(DeleteMicrovmImageVersionCommand).map((c) => c.args[0].input.imageVersion),
     ).toEqual(['1.0', '4.0']);
+  });
+});
+
+describe('waitForSettledImage', () => {
+  const mvm = mockClient(LambdaMicrovmsClient);
+  beforeEach(() => mvm.reset());
+
+  it('waits while the image is updating, then returns', async () => {
+    mvm
+      .on(GetMicrovmImageCommand)
+      .resolvesOnce({ state: 'UPDATING' } as never)
+      .resolves({ state: 'UPDATED' } as never);
+    await waitForSettledImage(new LambdaMicrovmsClient({}), 'arn', 'img', 60_000, async () => {});
+    expect(mvm.commandCalls(GetMicrovmImageCommand)).toHaveLength(2);
+  });
+
+  it('gives up with a clear message instead of a raw API error', async () => {
+    mvm.on(GetMicrovmImageCommand).resolves({ state: 'UPDATING' } as never);
+    await expect(
+      waitForSettledImage(new LambdaMicrovmsClient({}), 'arn', 'img', -1, async () => {}),
+    ).rejects.toThrow('still UPDATING');
   });
 });

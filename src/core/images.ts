@@ -167,13 +167,21 @@ export async function startImageBuilds(
           terminate: 'ENABLED',
           terminateTimeoutInSeconds: 10,
         },
-        microvmImageHooks: { ready: 'ENABLED', readyTimeoutInSeconds: 600 },
+        // /validate warms Docker on a fresh MicroVM so Lambda prefetches those snapshot pages.
+        microvmImageHooks: {
+          ready: 'ENABLED',
+          readyTimeoutInSeconds: 600,
+          validate: 'ENABLED',
+          validateTimeoutInSeconds: 600,
+        },
       } as never,
     };
     const arn = existing.get(name);
     if (arn) {
       previousMicrovmVersions[key] = (await microvmImageState(clients.microvms, arn)).active;
       await pruneMicrovmVersions(clients.microvms, arn, previousMicrovmVersions[key]);
+      // Deleting versions puts the image into a transitional state; updates are refused until it settles.
+      await waitForSettledImage(clients.microvms, arn, name);
       await clients.microvms.send(
         new UpdateMicrovmImageCommand({ imageIdentifier: arn, ...common }),
       );
@@ -294,4 +302,26 @@ export async function pruneMicrovmVersions(
     deleted.push(version);
   }
   return deleted;
+}
+
+const SETTLED = new Set(['CREATED', 'UPDATED', 'CREATE_FAILED', 'UPDATE_FAILED']);
+
+export async function waitForSettledImage(
+  client: LambdaMicrovmsClient,
+  arn: string,
+  name: string,
+  timeoutMs = 5 * 60_000,
+  sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { state } = await microvmImageState(client, arn);
+    if (state && SETTLED.has(state)) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `MicroVM image ${name} is still ${state} (a build or cleanup is running); try again in a few minutes`,
+      );
+    }
+    await sleep(5000);
+  }
 }

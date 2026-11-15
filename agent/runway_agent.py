@@ -123,29 +123,74 @@ def _group_exists(name):
         return False
 
 
-def start_dockerd(storage=None):
-    """MicroVM images run Docker without systemd; start a fresh daemon for this job.
+CONTAINERD_SOCKET = "/run/containerd/containerd.sock"
 
-    Started at /run rather than baked into the snapshot: a daemon resumed from a snapshot
-    has stale bridge networking. Its output goes to the agent's log (CloudWatch), and if it
-    exits within a few seconds it is restarted once with the vfs storage driver.
+
+def _relay(proc, name):
+    for raw in iter(proc.stdout.readline, b""):
+        print(name + ": " + raw.decode("utf-8", "replace").rstrip(), flush=True)
+
+
+def _wait_for(check, timeout, interval=0.5, clock=time.monotonic):
+    deadline = clock() + timeout
+    while clock() < deadline:
+        if check():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _quiet(cmd):
+    return subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+
+def start_docker(storage=None, containerd_timeout=120, popen=subprocess.Popen):
+    """Start containerd, then dockerd on top of it, for this job (MicroVM images, no systemd).
+
+    Started at /run rather than baked into the snapshot: a daemon resumed from a snapshot has
+    stale bridge networking. containerd is started separately because right after a MicroVM
+    resumes, binaries page in slowly, and dockerd's own wait for the containerd it spawns can
+    time out. Output goes to the agent's log (CloudWatch); if dockerd fails, it is retried
+    once with the vfs storage driver. Returns the dockerd process, or None without Docker.
     """
     if not shutil.which("dockerd"):
         return None
     storage = storage or os.environ.get("RUNWAY_DOCKER_STORAGE", "overlay2")
+    containerd = None
+    if shutil.which("containerd"):
+        if not _quiet(["ctr", "--address", CONTAINERD_SOCKET, "version"]):
+            log("starting containerd")
+            containerd = popen(["containerd"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            threading.Thread(target=_relay, args=(containerd, "containerd"), daemon=True).start()
+            if not _wait_for(lambda: _quiet(["ctr", "--address", CONTAINERD_SOCKET, "version"]), containerd_timeout):
+                log("containerd did not start", seconds=containerd_timeout)
+                return None
+    args = ["dockerd", "--dns", DOCKER_DNS, "--storage-driver", storage]
+    if containerd is not None or os.path.exists(CONTAINERD_SOCKET):
+        args += ["--containerd", CONTAINERD_SOCKET]
     log("starting dockerd", storage=storage)
-    proc = subprocess.Popen(["dockerd", "--dns", DOCKER_DNS, "--storage-driver", storage], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
-    def relay():
-        for raw in iter(proc.stdout.readline, b""):
-            print("dockerd: " + raw.decode("utf-8", "replace").rstrip(), flush=True)
+    def watch():
+        _relay(proc, "dockerd")
         code = proc.wait()
         log("dockerd exited", code=code, storage=storage)
-        if storage != "vfs":
-            start_dockerd("vfs")
+        if code != 0 and storage != "vfs":
+            start_docker("vfs", containerd_timeout, popen)
 
-    threading.Thread(target=relay, daemon=True).start()
+    threading.Thread(target=watch, daemon=True).start()
     return proc
+
+
+def warm_docker():
+    """For the /validate hook: start Docker once so Lambda learns which snapshot pages to prefetch."""
+    proc = start_docker()
+    if proc is None:
+        return
+    ready = _wait_for(lambda: _quiet(["docker", "info"]), 180)
+    log("docker warm-up", ready=ready)
+    proc.terminate()
+    _quiet(["pkill", "containerd"])
 
 
 def parse_run_payload(body):
@@ -185,6 +230,7 @@ def fetch_jit_config(url, opener=None, attempts=5):
 class HookServer(BaseHTTPRequestHandler):
     runner_dir = "/opt/actions-runner"
     job = None
+    warmup = None
     lock = threading.Lock()
 
     def log_message(self, fmt, *args):  # keep stdout for structured logs
@@ -209,7 +255,17 @@ class HookServer(BaseHTTPRequestHandler):
         if hook == "ready":
             ready = os.path.exists(os.path.join(self.runner_dir, "bin", "Runner.Listener"))
             return self._reply(200 if ready else 503)
-        if hook in ("validate", "resume", "suspend"):
+        if hook == "validate":
+            # Lambda calls this on a fresh MicroVM from the new image; 503 means "not done yet".
+            if os.environ.get("RUNWAY_DOCKER") == "1":
+                with HookServer.lock:
+                    if HookServer.warmup is None:
+                        HookServer.warmup = threading.Thread(target=warm_docker, daemon=True)
+                        HookServer.warmup.start()
+                if HookServer.warmup.is_alive():
+                    return self._reply(503)
+            return self._reply(200)
+        if hook in ("resume", "suspend"):
             return self._reply(200)
         if hook == "run":
             try:
@@ -233,7 +289,7 @@ class HookServer(BaseHTTPRequestHandler):
     def _run_job(payload):
         log("job starting", runner=payload.get("runnerName"), microvm=payload.get("microvmId"))
         if os.environ.get("RUNWAY_DOCKER") == "1":
-            start_dockerd()
+            start_docker()
         if not HookServer.job.jit_config:
             try:
                 HookServer.job.jit_config = fetch_jit_config(payload["jitUrl"])

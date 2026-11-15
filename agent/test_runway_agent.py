@@ -203,10 +203,45 @@ class HookServerTest(unittest.TestCase):
             self.assertTrue(started.wait(2))
             self.assertEqual(self.post("run", body), 409)
 
+    def test_validate_warms_docker_and_answers_503_until_done(self):
+        done = threading.Event()
+        with mock.patch.dict(os.environ, {"RUNWAY_DOCKER": "1"}), mock.patch.object(agent, "warm_docker", lambda: done.wait(5)):
+            agent.HookServer.warmup = None
+            self.assertEqual(self.post("validate"), 503)
+            done.set()
+            agent.HookServer.warmup.join(2)
+            self.assertEqual(self.post("validate"), 200)
+        agent.HookServer.warmup = None
+
     def test_bad_payloads_and_unknown_hooks(self):
         self.assertEqual(self.post("run", {"runHookPayload": "{}"}), 400)
         self.assertEqual(self.post("nope"), 404)
-        self.assertEqual(self.post("validate"), 200)
+        with mock.patch.dict(os.environ, {"RUNWAY_DOCKER": "0"}):
+            self.assertEqual(self.post("validate"), 200)
+
+
+class DockerTest(unittest.TestCase):
+    def test_starts_containerd_then_points_dockerd_at_it(self):
+        started = []
+
+        def popen(cmd, **kw):
+            started.append(cmd)
+            proc = FakeProc([], block=True)
+            return proc
+
+        answers = iter([False, True])  # containerd not up yet; up after we start it
+        with mock.patch.object(agent.shutil, "which", return_value="/usr/bin/x"), \
+                mock.patch.object(agent, "_quiet", side_effect=lambda cmd: next(answers, True)), \
+                mock.patch.object(agent.time, "sleep", lambda s: None):
+            agent.start_docker(popen=popen)
+        self.assertEqual(started[0], ["containerd"])
+        self.assertEqual(started[1][:1], ["dockerd"])
+        self.assertIn("--containerd", started[1])
+        self.assertIn(agent.DOCKER_DNS, started[1])
+
+    def test_gives_up_without_docker_installed(self):
+        with mock.patch.object(agent.shutil, "which", return_value=None):
+            self.assertIsNone(agent.start_docker(popen=lambda *a, **k: self.fail("started something")))
 
 
 class LambdaTest(unittest.TestCase):
