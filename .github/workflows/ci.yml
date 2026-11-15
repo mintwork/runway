@@ -58,6 +58,7 @@ jobs:
           digest() { echo "$release" | jq -r ".assets[] | select(.name==\"actions-runner-linux-$1-$version.tar.gz\") | .digest" | sed 's/^sha256://'; }
           ctx=$(mktemp -d)
           cp images/install-runner.sh agent/runway_agent.py "$ctx/"
+          : > "$ctx/runner-tools.sh"   # no custom tools (the default)
           cp images/container/Dockerfile.${{ matrix.kind }} "$ctx/Dockerfile"
           docker build --build-arg RUNNER_VERSION=$version --build-arg RUNNER_SHA256_ARM64=$(digest arm64) --build-arg RUNNER_SHA256_X64=$(digest x64) -t runner "$ctx"
           docker run --rm --entrypoint /opt/actions-runner/bin/Runner.Listener runner --version
