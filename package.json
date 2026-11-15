@@ -1,0 +1,79 @@
+{
+  "name": "@mintwork/runway",
+  "version": "0.1.0",
+  "description": "Run GitHub Actions jobs on your own AWS compute: Lambda MicroVMs, EC2 (Spot), Fargate or Lambda. One setup command, then pick the machine with runs-on labels.",
+  "keywords": [
+    "github-actions",
+    "self-hosted-runner",
+    "aws",
+    "lambda-microvms",
+    "ec2",
+    "spot",
+    "fargate",
+    "lambda",
+    "ci",
+    "runner"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mintwork/runway.git"
+  },
+  "homepage": "https://mintwork.github.io/runway/",
+  "bugs": {
+    "url": "https://github.com/mintwork/runway/issues"
+  },
+  "type": "module",
+  "bin": {
+    "runway": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run && npm run test:agent",
+    "test:agent": "python3 -m unittest discover -s agent -p 'test_*.py'",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "node scripts/gen-sources.mjs && tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm test",
+    "prepublishOnly": "npm run build",
+    "gen": "node scripts/gen-sources.mjs",
+    "pretest": "node scripts/gen-sources.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cloudformation": "^3.1169.0",
+    "@aws-sdk/client-codebuild": "^3.1169.0",
+    "@aws-sdk/client-dynamodb": "^3.1169.0",
+    "@aws-sdk/client-ec2": "^3.1169.0",
+    "@aws-sdk/client-ecs": "^3.1169.0",
+    "@aws-sdk/client-lambda": "^3.1169.0",
+    "@aws-sdk/client-lambda-microvms": "^3.1169.0",
+    "@aws-sdk/client-s3": "^3.1169.0",
+    "@aws-sdk/client-service-quotas": "^3.1169.0",
+    "@aws-sdk/client-sqs": "^3.1169.0",
+    "@aws-sdk/client-ssm": "^3.1169.0",
+    "@aws-sdk/client-sts": "^3.1169.0",
+    "@aws-sdk/lib-dynamodb": "^3.1169.0",
+    "fflate": "^0.8.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.7",
+    "@types/aws-lambda": "^8.10.164",
+    "@types/node": "^26.6.6",
+    "aws-sdk-client-mock": "^4.1.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

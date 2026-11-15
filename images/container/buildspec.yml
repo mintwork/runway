@@ -1,0 +1,36 @@
+# CodeBuild: builds the Fargate and Lambda runner images for one architecture (the build runs
+# on a native ARM or x86 host), pushes them to the stack's ECR repository, and points existing
+# Lambda runner functions at the new image. runway starts one build per architecture.
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${REPO_URI%%/*}"
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        args="--build-arg RUNNER_VERSION=$RUNNER_VERSION --build-arg RUNNER_SHA256_ARM64=$RUNNER_SHA256_ARM64 --build-arg RUNNER_SHA256_X64=$RUNNER_SHA256_X64"
+        for kind in fargate lambda; do
+          dir="/tmp/build-$kind"
+          mkdir -p "$dir"
+          cp install-runner.sh runway_agent.py "$dir/"
+          cp "Dockerfile.$kind" "$dir/Dockerfile"
+          # Lambda needs a single-platform Docker v2 manifest, not an OCI index.
+          docker build --provenance=false $args -t "$REPO_URI:$kind-$ARCH" -t "$REPO_URI:$kind-$ARCH-$RUNNER_VERSION" "$dir"
+          docker push "$REPO_URI:$kind-$ARCH"
+          docker push "$REPO_URI:$kind-$ARCH-$RUNNER_VERSION"
+        done
+  post_build:
+    commands:
+      - |
+        set -euo pipefail
+        [ "$CODEBUILD_BUILD_SUCCEEDING" = 1 ] || exit 0
+        for fn in $(aws lambda list-functions --query "Functions[?starts_with(FunctionName, '${FUNCTION_PREFIX}-${ARCH}-')].FunctionName" --output text); do
+          echo "updating $fn"
+          aws lambda update-function-code --function-name "$fn" --image-uri "$REPO_URI:lambda-$ARCH" >/dev/null
+        done

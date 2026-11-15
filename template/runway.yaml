@@ -1,0 +1,767 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  runway (https://github.com/mintwork/runway): run GitHub Actions jobs on your own AWS compute.
+  Lambda MicroVMs, EC2 (on-demand and Spot), ECS Fargate and Lambda functions, picked per job
+  with runs-on labels. Deployed and updated by `npx @mintwork/runway`.
+
+Parameters:
+  AssetsBucket:
+    Type: String
+    Description: S3 bucket the runway CLI uploads code and image sources to.
+  FunctionsKey:
+    Type: String
+    Description: S3 key of the dispatcher functions zip.
+  AgentKey:
+    Type: String
+    Description: S3 key of the runner agent (downloaded by EC2 runners).
+  AllowedOwners:
+    Type: String
+    Description: Comma-separated GitHub owners (orgs or users) whose jobs may run here.
+  AllowPublicRepos:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Allow jobs from public repositories (runs from forks are always refused).
+  DefaultCompute:
+    Type: String
+    Default: microvm
+    AllowedValues: [microvm, ec2, fargate, lambda]
+  Fallback:
+    Type: String
+    Default: "microvm:ec2"
+    Description: Where to send a job when its compute type has no capacity, as from:to pairs.
+  MaxJobMinutes:
+    Type: Number
+    Default: 360
+    MinValue: 5
+    MaxValue: 2880
+  MicrovmSizes:
+    Type: String
+    Default: arm64-1cpu
+    Description: MicroVM runner images to build, e.g. arm64-1cpu,arm64-2cpu.
+  RunnerPolicyArns:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Managed policies to attach to every runner role (what your jobs may do in AWS). Empty means none.
+  VpcCidr:
+    Type: String
+    Default: 10.80.0.0/16
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
+  LambdaRuntime:
+    Type: String
+    Default: nodejs24.x
+
+Conditions:
+  HasRunnerPolicies: !Not [!Equals [!Join ["", !Ref RunnerPolicyArns], ""]]
+
+Resources:
+  # ---------------------------------------------------------------- network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: !Sub "runway-${AWS::StackName}" }]
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub "runway-${AWS::StackName}" }]
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: { VpcId: !Ref Vpc, InternetGatewayId: !Ref InternetGateway }
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "runway-${AWS::StackName}-public" }]
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      {
+        RouteTableId: !Ref PublicRouteTable,
+        DestinationCidrBlock: 0.0.0.0/0,
+        GatewayId: !Ref InternetGateway,
+      }
+  SubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 4, 12]]
+      Tags: [{ Key: Name, Value: !Sub "runway-${AWS::StackName}-a" }]
+  SubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 4, 12]]
+      Tags: [{ Key: Name, Value: !Sub "runway-${AWS::StackName}-b" }]
+  SubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref SubnetA, RouteTableId: !Ref PublicRouteTable }
+  SubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref SubnetB, RouteTableId: !Ref PublicRouteTable }
+  RunnerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: runway runners (outbound only; runners dial out to GitHub)
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0, Description: all outbound }
+      Tags: [{ Key: Name, Value: !Sub "runway-${AWS::StackName}-runners" }]
+
+  # ---------------------------------------------------------------- state
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 720
+      MessageRetentionPeriod: 86400
+      SqsManagedSseEnabled: true
+      RedrivePolicy: { deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn, maxReceiveCount: 60 }
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: pk, AttributeType: S }]
+      KeySchema: [{ AttributeName: pk, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false }
+
+  # ---------------------------------------------------------------- logs
+  WebhookLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      {
+        LogGroupName: !Sub "/aws/lambda/runway-${AWS::StackName}-webhook",
+        RetentionInDays: !Ref LogRetentionDays,
+      }
+  WorkerLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      {
+        LogGroupName: !Sub "/aws/lambda/runway-${AWS::StackName}-worker",
+        RetentionInDays: !Ref LogRetentionDays,
+      }
+  SweeperLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      {
+        LogGroupName: !Sub "/aws/lambda/runway-${AWS::StackName}-sweeper",
+        RetentionInDays: !Ref LogRetentionDays,
+      }
+  MaintainerLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      {
+        LogGroupName: !Sub "/aws/lambda/runway-${AWS::StackName}-maintainer",
+        RetentionInDays: !Ref LogRetentionDays,
+      }
+  MicrovmLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      {
+        LogGroupName: !Sub "/runway/${AWS::StackName}/microvm",
+        RetentionInDays: !Ref LogRetentionDays,
+      }
+  FargateLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      {
+        LogGroupName: !Sub "/runway/${AWS::StackName}/fargate",
+        RetentionInDays: !Ref LogRetentionDays,
+      }
+  CodeBuildLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      {
+        LogGroupName: !Sub "/runway/${AWS::StackName}/codebuild",
+        RetentionInDays: !Ref LogRetentionDays,
+      }
+
+  # ---------------------------------------------------------------- runner roles (what jobs run as)
+  MicrovmBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Lambda uses this to build runway MicroVM images from the assets bucket.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition: { StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId } }
+      Policies:
+        - PolicyName: build
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/runway/images/*"
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt MicrovmLogs.Arn
+  MicrovmExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The role runway MicroVM runners (and so their jobs) run as.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition: { StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId } }
+      ManagedPolicyArns: !If [HasRunnerPolicies, !Ref RunnerPolicyArns, !Ref AWS::NoValue]
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt MicrovmLogs.Arn
+  Ec2RunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The role runway EC2 runners (and so their jobs) run as.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      ManagedPolicyArns: !If [HasRunnerPolicies, !Ref RunnerPolicyArns, !Ref AWS::NoValue]
+      Policies:
+        - PolicyName: agent
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/${AgentKey}"
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: { Roles: [!Ref Ec2RunnerRole] }
+  FargateExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: ECS uses this to pull the runway runner image and write task logs.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {
+              Effect: Allow,
+              Principal: { Service: ecs-tasks.amazonaws.com },
+              Action: sts:AssumeRole,
+            }
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+  FargateTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The role runway Fargate runners (and so their jobs) run as.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition: { StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId } }
+      ManagedPolicyArns: !If [HasRunnerPolicies, !Ref RunnerPolicyArns, !Ref AWS::NoValue]
+  LambdaRunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The role runway Lambda runners (and so their jobs) run as.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }
+      ManagedPolicyArns: !Split
+        - ","
+        - !Join
+          - ","
+          - - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+            - !If [HasRunnerPolicies, !Join [",", !Ref RunnerPolicyArns], !Ref AWS::NoValue]
+
+  # ---------------------------------------------------------------- images
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "runway-${AWS::StackName}"
+      EmptyOnDelete: true
+      ImageScanningConfiguration: { ScanOnPush: true }
+      EncryptionConfiguration: { EncryptionType: AES256 }
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"keep the last 12 runner builds","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":12},"action":{"type":"expire"}}]}
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: LambdaRunnersPull
+            Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer]
+            Condition:
+              StringLike:
+                {
+                  "aws:sourceArn": !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:runway-${AWS::StackName}-runner-*",
+                }
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - {
+              Effect: Allow,
+              Principal: { Service: codebuild.amazonaws.com },
+              Action: sts:AssumeRole,
+            }
+      Policies:
+        - PolicyName: build
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {
+                  Effect: Allow,
+                  Action: [logs:CreateLogStream, logs:PutLogEvents],
+                  Resource: !GetAtt CodeBuildLogs.Arn,
+                }
+              - {
+                  Effect: Allow,
+                  Action: s3:GetObject,
+                  Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/runway/images/*",
+                }
+              - { Effect: Allow, Action: ecr:GetAuthorizationToken, Resource: "*" }
+              - Effect: Allow
+                Action:
+                  [
+                    ecr:BatchCheckLayerAvailability,
+                    ecr:CompleteLayerUpload,
+                    ecr:InitiateLayerUpload,
+                    ecr:PutImage,
+                    ecr:UploadLayerPart,
+                    ecr:BatchGetImage,
+                    ecr:GetDownloadUrlForLayer,
+                  ]
+                Resource: !GetAtt Repository.Arn
+              - { Effect: Allow, Action: lambda:ListFunctions, Resource: "*" }
+              - Effect: Allow
+                Action: lambda:UpdateFunctionCode
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:runway-${AWS::StackName}-runner-*"
+  BuildArm64:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "runway-${AWS::StackName}-arm64"
+      Description: Builds the runway Fargate and Lambda runner images for arm64.
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source: { Type: S3, Location: !Sub "${AssetsBucket}/runway/images/container.zip" }
+      Artifacts: { Type: NO_ARTIFACTS }
+      TimeoutInMinutes: 45
+      LogsConfig:
+        { CloudWatchLogs: { Status: ENABLED, GroupName: !Ref CodeBuildLogs, StreamName: arm64 } }
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/amazonlinux-aarch64-standard:4.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - { Name: REPO_URI, Value: !GetAtt Repository.RepositoryUri }
+          - { Name: ARCH, Value: arm64 }
+          - { Name: FUNCTION_PREFIX, Value: !Sub "runway-${AWS::StackName}-runner" }
+  BuildX64:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "runway-${AWS::StackName}-x64"
+      Description: Builds the runway Fargate and Lambda runner images for x64.
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source: { Type: S3, Location: !Sub "${AssetsBucket}/runway/images/container.zip" }
+      Artifacts: { Type: NO_ARTIFACTS }
+      TimeoutInMinutes: 45
+      LogsConfig:
+        { CloudWatchLogs: { Status: ENABLED, GroupName: !Ref CodeBuildLogs, StreamName: x64 } }
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/amazonlinux-x86_64-standard:6.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - { Name: REPO_URI, Value: !GetAtt Repository.RepositoryUri }
+          - { Name: ARCH, Value: x64 }
+          - { Name: FUNCTION_PREFIX, Value: !Sub "runway-${AWS::StackName}-runner" }
+
+  # ---------------------------------------------------------------- fargate
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "runway-${AWS::StackName}"
+      ClusterSettings: [{ Name: containerInsights, Value: disabled }]
+  FargateTaskArm64:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "runway-${AWS::StackName}-arm64"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: "1024"
+      Memory: "2048"
+      RuntimePlatform: { CpuArchitecture: ARM64, OperatingSystemFamily: LINUX }
+      ExecutionRoleArn: !GetAtt FargateExecutionRole.Arn
+      TaskRoleArn: !GetAtt FargateTaskRole.Arn
+      ContainerDefinitions:
+        - Name: runner
+          Image: !Sub "${Repository.RepositoryUri}:fargate-arm64"
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              {
+                awslogs-group: !Ref FargateLogs,
+                awslogs-region: !Ref AWS::Region,
+                awslogs-stream-prefix: arm64,
+              }
+  FargateTaskX64:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "runway-${AWS::StackName}-x64"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: "1024"
+      Memory: "2048"
+      RuntimePlatform: { CpuArchitecture: X86_64, OperatingSystemFamily: LINUX }
+      ExecutionRoleArn: !GetAtt FargateExecutionRole.Arn
+      TaskRoleArn: !GetAtt FargateTaskRole.Arn
+      ContainerDefinitions:
+        - Name: runner
+          Image: !Sub "${Repository.RepositoryUri}:fargate-x64"
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              {
+                awslogs-group: !Ref FargateLogs,
+                awslogs-region: !Ref AWS::Region,
+                awslogs-stream-prefix: x64,
+              }
+
+  # ---------------------------------------------------------------- dispatcher
+  WebhookRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: webhook
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {
+                  Effect: Allow,
+                  Action: [logs:CreateLogStream, logs:PutLogEvents],
+                  Resource: !GetAtt WebhookLogs.Arn,
+                }
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/github-app"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  { StringEquals: { "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com" } }
+              - { Effect: Allow, Action: sqs:SendMessage, Resource: !GetAtt Queue.Arn }
+  DispatcherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The runway worker and sweeper launch and terminate runners with this role.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: dispatch
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: [!GetAtt WorkerLogs.Arn, !GetAtt SweeperLogs.Arn]
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/*"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  { StringEquals: { "kms:ViaService": !Sub "ssm.${AWS::Region}.amazonaws.com" } }
+              - Effect: Allow
+                Action:
+                  [
+                    sqs:ReceiveMessage,
+                    sqs:DeleteMessage,
+                    sqs:GetQueueAttributes,
+                    sqs:ChangeMessageVisibility,
+                  ]
+                Resource: !GetAtt Queue.Arn
+              - Effect: Allow
+                Action:
+                  [
+                    dynamodb:GetItem,
+                    dynamodb:PutItem,
+                    dynamodb:UpdateItem,
+                    dynamodb:DeleteItem,
+                    dynamodb:Scan,
+                  ]
+                Resource: !GetAtt Table.Arn
+              # Lambda MicroVMs
+              - Effect: Allow
+                Action:
+                  [
+                    lambda:RunMicrovm,
+                    lambda:TerminateMicrovm,
+                    lambda:GetMicrovm,
+                    lambda:ListMicrovms,
+                    lambda:GetMicrovmImage,
+                  ]
+                Resource: "*"
+              - Effect: Allow
+                Action: lambda:PassNetworkConnector
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:*"
+              # EC2 (only instances tagged for this stack can be terminated)
+              - { Effect: Allow, Action: ec2:RunInstances, Resource: "*" }
+              - Effect: Allow
+                Action: ec2:CreateTags
+                Resource: "*"
+                Condition: { StringEquals: { "ec2:CreateAction": RunInstances } }
+              - Effect: Allow
+                Action: ec2:TerminateInstances
+                Resource: "*"
+                Condition: { StringEquals: { "aws:ResourceTag/runway:stack": !Ref AWS::StackName } }
+              - { Effect: Allow, Action: ec2:DescribeInstances, Resource: "*" }
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}::parameter/aws/service/ami-amazon-linux-latest/*"
+              # Fargate
+              - Effect: Allow
+                Action: ecs:RunTask
+                Resource: "*"
+                Condition: { ArnEquals: { "ecs:cluster": !GetAtt Cluster.Arn } }
+              - { Effect: Allow, Action: ecs:TagResource, Resource: "*" }
+              - Effect: Allow
+                Action: [ecs:StopTask, ecs:DescribeTasks, ecs:ListTasks]
+                Resource: "*"
+                Condition: { ArnEquals: { "ecs:cluster": !GetAtt Cluster.Arn } }
+              # Lambda function runners (created on first use, one per architecture and size)
+              - Effect: Allow
+                Action:
+                  [
+                    lambda:CreateFunction,
+                    lambda:GetFunctionConfiguration,
+                    lambda:InvokeFunction,
+                    lambda:PutFunctionEventInvokeConfig,
+                    lambda:TagResource,
+                  ]
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:runway-${AWS::StackName}-runner-*"
+              - Effect: Allow
+                Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer]
+                Resource: !GetAtt Repository.Arn
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  [
+                    !GetAtt MicrovmExecRole.Arn,
+                    !GetAtt Ec2RunnerRole.Arn,
+                    !GetAtt FargateExecutionRole.Arn,
+                    !GetAtt FargateTaskRole.Arn,
+                    !GetAtt LambdaRunnerRole.Arn,
+                  ]
+  MaintainerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: The runway maintainer rebuilds runner images with this role.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: maintain
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - {
+                  Effect: Allow,
+                  Action: [logs:CreateLogStream, logs:PutLogEvents],
+                  Resource: !GetAtt MaintainerLogs.Arn,
+                }
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:PutParameter]
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/runway/${AWS::StackName}/images"
+              - {
+                  Effect: Allow,
+                  Action: s3:PutObject,
+                  Resource: !Sub "arn:${AWS::Partition}:s3:::${AssetsBucket}/runway/images/*",
+                }
+              - Effect: Allow
+                Action:
+                  [
+                    lambda:CreateMicrovmImage,
+                    lambda:UpdateMicrovmImage,
+                    lambda:GetMicrovmImage,
+                    lambda:ListMicrovmImages,
+                    lambda:ListMicrovmImageVersions,
+                    lambda:DeleteMicrovmImageVersion,
+                    lambda:TagResource,
+                  ]
+                Resource: "*"
+              - { Effect: Allow, Action: lambda:PassNetworkConnector, Resource: "*" }
+              - { Effect: Allow, Action: iam:PassRole, Resource: !GetAtt MicrovmBuildRole.Arn }
+              - {
+                  Effect: Allow,
+                  Action: codebuild:StartBuild,
+                  Resource: [!GetAtt BuildArm64.Arn, !GetAtt BuildX64.Arn],
+                }
+
+  WebhookFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: WebhookLogs
+    Properties:
+      FunctionName: !Sub "runway-${AWS::StackName}-webhook"
+      Description: runway - receives GitHub workflow_job webhooks
+      Runtime: !Ref LambdaRuntime
+      Architectures: [arm64]
+      Handler: webhook.handler
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt WebhookRole.Arn
+      Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
+      Environment: "@@RUNWAY_ENVIRONMENT@@"
+  WebhookUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt WebhookFunction.Arn
+      AuthType: NONE
+  WebhookUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebhookFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+  WebhookInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebhookFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+  WorkerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: WorkerLogs
+    Properties:
+      FunctionName: !Sub "runway-${AWS::StackName}-worker"
+      Description: runway - launches and cleans up runners
+      Runtime: !Ref LambdaRuntime
+      Architectures: [arm64]
+      Handler: worker.handler
+      MemorySize: 512
+      Timeout: 120
+      Role: !GetAtt DispatcherRole.Arn
+      Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
+      Environment: "@@RUNWAY_ENVIRONMENT@@"
+  WorkerQueueMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt Queue.Arn
+      FunctionName: !Ref WorkerFunction
+      BatchSize: 5
+      FunctionResponseTypes: [ReportBatchItemFailures]
+
+  SweeperFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: SweeperLogs
+    Properties:
+      FunctionName: !Sub "runway-${AWS::StackName}-sweeper"
+      Description: runway - ends runners and machines that are no longer needed
+      Runtime: !Ref LambdaRuntime
+      Architectures: [arm64]
+      Handler: sweeper.handler
+      MemorySize: 512
+      Timeout: 120
+      Role: !GetAtt DispatcherRole.Arn
+      Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
+      Environment: "@@RUNWAY_ENVIRONMENT@@"
+  SweeperSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: rate(2 minutes)
+      Targets: [{ Id: sweeper, Arn: !GetAtt SweeperFunction.Arn }]
+  SweeperPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SweeperFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SweeperSchedule.Arn
+
+  MaintainerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: MaintainerLogs
+    Properties:
+      FunctionName: !Sub "runway-${AWS::StackName}-maintainer"
+      Description: runway - rebuilds runner images when a new runner version ships
+      Runtime: !Ref LambdaRuntime
+      Architectures: [arm64]
+      Handler: maintainer.handler
+      MemorySize: 512
+      Timeout: 300
+      Role: !GetAtt MaintainerRole.Arn
+      Code: { S3Bucket: !Ref AssetsBucket, S3Key: !Ref FunctionsKey }
+      Environment: "@@RUNWAY_ENVIRONMENT@@"
+  MaintainerSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: cron(17 3 ? * MON *)
+      Targets: [{ Id: maintainer, Arn: !GetAtt MaintainerFunction.Arn }]
+  MaintainerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MaintainerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MaintainerSchedule.Arn
+
+Outputs:
+  WebhookUrl:
+    Value: !GetAtt WebhookUrl.FunctionUrl
+  QueueUrl:
+    Value: !Ref Queue
+  DeadLetterQueueUrl:
+    Value: !Ref DeadLetterQueue
+  TableName:
+    Value: !Ref Table
+  RepositoryUri:
+    Value: !GetAtt Repository.RepositoryUri
+  MicrovmBuildRoleArn:
+    Value: !GetAtt MicrovmBuildRole.Arn
+  MicrovmLogGroup:
+    Value: !Ref MicrovmLogs
+  CodeBuildArm64:
+    Value: !Ref BuildArm64
+  CodeBuildX64:
+    Value: !Ref BuildX64
+  MaintainerFunction:
+    Value: !Ref MaintainerFunction
+  RunnerFunctionPrefix:
+    Value: !Sub "runway-${AWS::StackName}-runner"

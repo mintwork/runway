@@ -1,0 +1,31 @@
+# Environment shared by every runway function (expanded into runway.yaml by scripts/gen-sources.mjs,
+# because CloudFormation templates can't use YAML anchors).
+RUNWAY_STACK: !Ref AWS::StackName
+RUNWAY_TABLE: !Ref Table
+RUNWAY_QUEUE_URL: !Ref Queue
+RUNWAY_APP_PARAM: !Sub "/runway/${AWS::StackName}/github-app"
+RUNWAY_IMAGES_PARAM: !Sub "/runway/${AWS::StackName}/images"
+RUNWAY_DEFAULT_COMPUTE: !Ref DefaultCompute
+RUNWAY_ALLOWED_OWNERS: !Ref AllowedOwners
+RUNWAY_ALLOW_PUBLIC_REPOS: !Ref AllowPublicRepos
+RUNWAY_MAX_JOB_MINUTES: !Ref MaxJobMinutes
+RUNWAY_FALLBACK: !Ref Fallback
+RUNWAY_SUBNETS: !Join [",", [!Ref SubnetA, !Ref SubnetB]]
+RUNWAY_SECURITY_GROUP: !Ref RunnerSecurityGroup
+RUNWAY_MICROVM_EXEC_ROLE: !GetAtt MicrovmExecRole.Arn
+RUNWAY_MICROVM_EGRESS: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS"
+RUNWAY_MICROVM_LOG_GROUP: !Ref MicrovmLogs
+RUNWAY_MICROVM_BUILD_ROLE: !GetAtt MicrovmBuildRole.Arn
+RUNWAY_MICROVM_SIZES: !Ref MicrovmSizes
+RUNWAY_EC2_INSTANCE_PROFILE: !GetAtt Ec2InstanceProfile.Arn
+RUNWAY_EC2_AGENT_URI: !Sub "s3://${AssetsBucket}/${AgentKey}"
+RUNWAY_ECS_CLUSTER: !Ref Cluster
+RUNWAY_FARGATE_TASKDEF_ARM64: !Ref FargateTaskArm64
+RUNWAY_FARGATE_TASKDEF_X64: !Ref FargateTaskX64
+RUNWAY_LAMBDA_RUNNER_ROLE: !GetAtt LambdaRunnerRole.Arn
+RUNWAY_LAMBDA_RUNNER_PREFIX: !Sub "runway-${AWS::StackName}-runner"
+RUNWAY_ECR_REPOSITORY: !GetAtt Repository.RepositoryUri
+RUNWAY_ASSETS_BUCKET: !Ref AssetsBucket
+RUNWAY_CODEBUILD_ARM64: !Ref BuildArm64
+RUNWAY_CODEBUILD_X64: !Ref BuildX64
+NODE_OPTIONS: --enable-source-maps
