@@ -320,10 +320,14 @@ export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Pro
   }
 
   const registry = await readRegistry(ssm, imagesParam(t.stack));
-  if (!registry || rebuild) {
+  // The registry is written as soon as a build starts, so a recent build may still be running
+  // (always the case right after the stack is created): follow it rather than calling it done.
+  const recentBuild =
+    registry?.build !== undefined && Date.now() - Date.parse(registry.build.startedAt) < 3600_000;
+  if (!registry || rebuild || recentBuild) {
     const requested = Date.now() - 5000;
     // On first setup the stack's bootstrap already started the builds; otherwise start them here.
-    if (registry) {
+    if (registry && rebuild) {
       // The maintainer builds images for setup, updates and the weekly refresh alike.
       await startBuilds(t, out.MaintainerFunction);
     }
@@ -332,7 +336,7 @@ export async function deploy(opts: DeployOptions, mode: 'setup' | 'update'): Pro
       info(
         'Images take about 10 minutes. Ctrl-C is safe: they keep building, and jobs wait for them.',
       );
-      await waitForImages(t, ssm, registry ? requested : 0, out.MaintainerFunction);
+      await waitForImages(t, ssm, registry && rebuild ? requested : 0, out.MaintainerFunction);
     } else ok('Image builds are running; follow them with "runway status"');
   } else {
     ok(

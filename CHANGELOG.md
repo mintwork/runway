@@ -8,6 +8,7 @@
   admits only `POST /` from GitHub's webhook ranges. Updating a 0.1.x stack removes them.
 - Setup is run from a terminal on your own machine; the CloudShell instructions are gone (CloudShell
   has no browser to open the local page).
+- `setup` waits for the first image builds instead of reporting them built as soon as they start.
 - `--profile <name>` on every command picks an AWS profile (otherwise `AWS_PROFILE` or the default).
 - When AWS's sign-in service fails (it answers with an error page), the CLI says so instead of
   telling you to log in again.
