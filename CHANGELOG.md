@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
 - **`update` keeps your options.** Options you leave out keep the stack's current values instead of
   going back to the defaults (before, a plain `update` reset `--fallback`, `--runner-policy`,
