@@ -66,6 +66,7 @@ async function exists(name: string): Promise<boolean> {
 /** EC2 Spot and ECS create these on first use, but only for callers allowed to create IAM roles. */
 async function ensureServiceLinkedRoles(): Promise<void> {
   const iam = new IAMClient({});
+  // eslint-disable-next-line security-node/detect-unhandled-async-errors -- errors propagate to the caller, which reports them
   for (const AWSServiceName of ['spot.amazonaws.com', 'ecs.amazonaws.com']) {
     await iam.send(new CreateServiceLinkedRoleCommand({ AWSServiceName })).catch((e: Error) => {
       if (!/has been taken|already exists/i.test(e.message)) throw e;
@@ -142,6 +143,7 @@ async function cleanUp(): Promise<void> {
   for (const Name of [...n.params, n.legacySetupToken])
     await ssm.send(new DeleteParameterCommand({ Name })).catch(() => {});
   let ContinuationToken: string | undefined;
+  // eslint-disable-next-line security-node/detect-unhandled-async-errors -- errors propagate to the caller, which reports them
   do {
     const page = await s3.send(new ListObjectsV2Command({ Bucket: n.bucket, ContinuationToken }));
     const keys = (page.Contents ?? []).map((o) => ({ Key: o.Key as string }));
@@ -170,6 +172,8 @@ async function respond(
     LogicalResourceId: event.LogicalResourceId,
     Data: data,
   });
+  // CloudFormation's presigned response URL for this custom resource; it's meant to be called.
+  // nosemgrep
   await fetch(event.ResponseURL, { method: 'PUT', body, headers: { 'content-type': '' } });
 }
 

@@ -3,7 +3,7 @@
 // GitHub sends the browser back to it with a one-time code, which the CLI redeems for the App's
 // credentials. The key goes from GitHub to this process to SSM, and nowhere else.
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
   convertManifestCode,
@@ -64,7 +64,12 @@ export function createApp(opts: CreateAppOptions): Promise<StoredApp> {
       else resolve(app as StoredApp);
     };
 
-    server = createServer(async (req, res) => {
+    // A plain (non-async) listener, so an unexpected error ends the flow instead of becoming an
+    // unhandled rejection.
+    server = createServer((req, res) => {
+      handle(req, res).catch((e: unknown) => finish(e instanceof Error ? e : new Error(String(e))));
+    });
+    const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
       const url = new URL(req.url ?? '/', base);
       const send = (status: number, html: string, headers: Record<string, string> = {}) => {
         res.writeHead(status, {
@@ -116,7 +121,7 @@ export function createApp(opts: CreateAppOptions): Promise<StoredApp> {
         return;
       }
       send(404, page('Not found', '<h1>Not found</h1>'));
-    });
+    };
     server.on('error', (e) => finish(e));
     // Loopback only: nothing else on the network can reach it.
     server.listen(0, '127.0.0.1', () => {

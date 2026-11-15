@@ -17,7 +17,7 @@ import json
 import os
 import shutil
 import signal
-import subprocess
+import subprocess  # nosec B404 - the agent exists to run the runner and the container tools
 import sys
 import threading
 import time
@@ -141,7 +141,8 @@ def _wait_for(check, timeout, interval=0.5, clock=time.monotonic):
 
 
 def _quiet(cmd):
-    return subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+    # cmd is a fixed argument list built in this file, never a shell string.
+    return subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0  # nosec B603 # nosemgrep
 
 
 def start_docker(storage=None, containerd_timeout=120, popen=subprocess.Popen):
@@ -233,7 +234,7 @@ class HookServer(BaseHTTPRequestHandler):
     warmup = None
     lock = threading.Lock()
 
-    def log_message(self, fmt, *args):  # keep stdout for structured logs
+    def log_message(self, format, *args):  # pylint: disable=redefined-builtin  # keep stdout for structured logs
         pass
 
     def _reply(self, status):
@@ -303,7 +304,8 @@ class HookServer(BaseHTTPRequestHandler):
 
 def serve():
     port = env_int("RUNWAY_HOOK_PORT", 9000)
-    server = ThreadingHTTPServer(("0.0.0.0", port), HookServer)
+    # Lambda MicroVMs call the hooks over the VM's network interface, so loopback isn't enough.
+    server = ThreadingHTTPServer(("0.0.0.0", port), HookServer)  # nosec B104
     log("hook server listening", port=port)
     server.serve_forever()
 
@@ -324,7 +326,7 @@ def oneshot():
     return job.run()
 
 
-def prepare_lambda_runner(source="/opt/actions-runner", target="/tmp/actions-runner"):
+def prepare_lambda_runner(source="/opt/actions-runner", target="/tmp/actions-runner"):  # nosec B108 - /tmp is Lambda's only writable path
     """The Lambda filesystem is read-only outside /tmp, and the runner writes next to itself."""
     if not os.path.exists(os.path.join(target, "run.sh")):
         started = time.monotonic()
@@ -338,7 +340,7 @@ def lambda_handler(event, context):
     if not jit:
         log("invocation has no jitConfig")
         return {"ok": False}
-    os.environ.setdefault("HOME", "/tmp")
+    os.environ.setdefault("HOME", "/tmp")  # nosec B108 - /tmp is Lambda's only writable path
     runner_dir = prepare_lambda_runner()
     remaining = int(context.get_remaining_time_in_millis() / 1000) - 20 if context else 880
     job = Job(runner_dir, jit, max_seconds=max(60, remaining), idle_seconds=min(env_int("RUNWAY_IDLE_SECONDS", 300), max(60, remaining)))

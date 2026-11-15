@@ -189,6 +189,7 @@ async function startBuilds(t: Target, maintainer: string): Promise<void> {
       Payload: Buffer.from(JSON.stringify({ force: true })),
     }),
   );
+  // eslint-disable-next-line security-node/detect-unhandled-async-errors -- errors propagate to the caller, which reports them
   if (res.FunctionError) {
     const detail = Buffer.from(res.Payload ?? []).toString();
     throw new CliError(

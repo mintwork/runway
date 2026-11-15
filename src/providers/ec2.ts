@@ -1,6 +1,7 @@
 // EC2: one instance per job, on-demand or Spot, any instance type. The user-data script
 // installs Docker and the runner on Amazon Linux 2023, runs the agent for one job, and
 // shuts down; InstanceInitiatedShutdownBehavior=terminate turns that into termination.
+import { randomInt } from 'node:crypto';
 import {
   DescribeInstancesCommand,
   EC2Client,
@@ -201,7 +202,7 @@ export class Ec2Provider implements Provider {
 function shuffle<T>(items: T[]): T[] {
   const a = [...items];
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = randomInt(i + 1);
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
