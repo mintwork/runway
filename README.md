@@ -43,7 +43,7 @@ You need permission to create a CloudFormation stack with IAM roles in your AWS 
 role is simplest), and owner rights on the GitHub organization or account.
 
 Run setup from a terminal on your own machine, with AWS credentials for that account (for example
-after `aws login`) and Node.js 22 or newer:
+after `aws login`; add `--profile <name>` to use a named profile) and Node.js 22 or newer:
 
 ```bash
 npx -y @mintwork/runway setup --owner <github-org-or-user> --region eu-central-1

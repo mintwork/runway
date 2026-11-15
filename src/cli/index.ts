@@ -25,6 +25,7 @@ const HELP = `
   ${bold('Options')}
     --owner <name>            GitHub organization or user whose repositories use runway (setup)
     --region <region>         AWS region (default: AWS_REGION)
+    --profile <name>          AWS profile from ~/.aws/config (default: AWS_PROFILE, or the default profile)
     --stack <name>            stack name, for several independent setups (default: runway)
     --default-compute <type>  microvm | ec2 | fargate | lambda (default: microvm)
     --fallback <pairs>        where jobs go when a compute type has no capacity (default: microvm:ec2)
@@ -61,6 +62,7 @@ async function main(argv: string[]): Promise<void> {
     options: {
       owner: { type: 'string' },
       region: { type: 'string' },
+      profile: { type: 'string' },
       stack: { type: 'string', default: 'runway' },
       'default-compute': { type: 'string', default: 'microvm' },
       fallback: { type: 'string', default: 'microvm:ec2' },
@@ -82,6 +84,8 @@ async function main(argv: string[]): Promise<void> {
   const command = positionals[0];
   if (values.help || !command) return void console.log(HELP);
 
+  // Every AWS client reads the profile from the environment when it first needs credentials.
+  if (values.profile) process.env.AWS_PROFILE = values.profile;
   const common = { region: values.region, stack: values.stack as string };
   const deployOpts = {
     ...common,
