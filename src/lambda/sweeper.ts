@@ -5,6 +5,7 @@ import { log, runtimeDeps } from './runtime.js';
 
 export async function handler(): Promise<void> {
   const result = await sweep(await runtimeDeps());
+  // eslint-disable-next-line security-node/detect-unhandled-async-errors -- errors propagate to the caller, which reports them
   if (result.terminated.length || result.orphans.length || result.relaunched.length)
     log('sweep', { ...result });
 }

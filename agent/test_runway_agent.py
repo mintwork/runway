@@ -2,7 +2,6 @@ import io
 import json
 import os
 import threading
-import time
 import unittest
 import urllib.error
 import urllib.request
@@ -185,7 +184,7 @@ class HookServerTest(unittest.TestCase):
     def post(self, hook, body=None):
         req = urllib.request.Request(self.base + agent.HOOK_PREFIX + hook, data=json.dumps(body or {}).encode(), method="POST")
         try:
-            return urllib.request.urlopen(req).status
+            return urllib.request.urlopen(req).status  # nosec B310 - a local http:// test server
         except urllib.error.HTTPError as e:
             return e.code
 
@@ -248,7 +247,8 @@ class LambdaTest(unittest.TestCase):
     def test_runs_the_job_then_discards_the_environment(self):
         ctx = mock.Mock()
         ctx.get_remaining_time_in_millis.return_value = 900_000
-        with mock.patch.object(agent, "prepare_lambda_runner", return_value="/tmp/actions-runner"), \
+        LAMBDA_RUNNER_DIR = "/tmp/actions-runner"  # nosec B108 - Lambda's only writable path
+        with mock.patch.object(agent, "prepare_lambda_runner", return_value=LAMBDA_RUNNER_DIR), \
                 mock.patch.object(agent.Job, "run", return_value=0) as run, \
                 mock.patch.object(agent.os, "_exit") as exit_:
             agent.lambda_handler({"jitConfig": "J", "runnerName": "runway-a"}, ctx)

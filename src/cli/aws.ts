@@ -144,6 +144,7 @@ async function waitForStack(
   since: Date,
 ): Promise<Stack> {
   const p = progress(label);
+  // eslint-disable-next-line security-node/detect-unhandled-async-errors -- errors propagate to the caller, which reports them
   for (;;) {
     const stack = await describeStack(cf, name);
     const status = stack?.StackStatus ?? 'DELETE_COMPLETE';

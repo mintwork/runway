@@ -1,0 +1,3 @@
+# Codacy: paths that don't ship to users (demo tooling).
+exclude_paths:
+  - "scripts/demo-gif.mjs"

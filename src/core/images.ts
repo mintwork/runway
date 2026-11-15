@@ -343,6 +343,7 @@ export async function waitForSettledImage(
   sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  // eslint-disable-next-line security-node/detect-unhandled-async-errors -- errors propagate to the caller, which reports them
   for (;;) {
     const { state } = await microvmImageState(client, arn);
     if (state && SETTLED.has(state)) return;

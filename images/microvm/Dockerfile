@@ -28,4 +28,7 @@ ENV HOME=/root \
     DOTNET_NOLOGO=1
 
 EXPOSE 9000
+# Runs as root on purpose: the agent starts containerd and dockerd, and each MicroVM runs one job
+# and is then discarded.
+# nosemgrep: dockerfile.security.missing-user.missing-user
 CMD ["python3", "/opt/runway/runway_agent.py", "serve"]
