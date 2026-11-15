@@ -170,6 +170,21 @@ npx -y @mintwork/runway update --runner-tools ./runner-tools.sh
 See [custom tools](docs/custom-tools.md) and the [example script](examples/runner-tools.sh)
 (Node.js, Python 3.12, gcc, Java, Terraform).
 
+### Adding or updating tools later
+
+The images are built at setup, but they aren't fixed. To add a tool or bump a version, edit your
+`runner-tools.sh` and run the same command again:
+
+```bash
+npx -y @mintwork/runway update --runner-tools ./runner-tools.sh   # upload, rebuild, wait for the builds
+```
+
+New jobs get the new tools as soon as each image is rebuilt (EC2 right away, since it runs the
+script at boot). Running jobs finish on the old images, and a failed build leaves that compute
+type on its old image (EC2 has no build step, so test the script first). runway also rebuilds by itself when GitHub ships a new runner and monthly for OS patches,
+re-running your script, so pin versions in it. The full guide, including going back to an earlier
+script: [adding or updating tools later](docs/custom-tools.md#adding-or-updating-tools-later).
+
 ## How it works
 
 ```

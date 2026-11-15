@@ -1,7 +1,7 @@
 # Adding your own tools to the runners
 
-runway's runner images are lean on purpose: Amazon Linux 2023 with git, the AWS CLI, Python 3,
-the GitHub Actions runner, and Docker on MicroVMs and EC2. They are not GitHub's `ubuntu-latest`
+runway's runner images are lean on purpose: Amazon Linux 2023 with git, Python 3, the GitHub
+Actions runner, the AWS CLI (except on Lambda), and Docker on MicroVMs and EC2. They are not GitHub's `ubuntu-latest`
 images, which ship hundreds of tools. You have two ways to add what your jobs need.
 
 ## Option 1: per job, with setup actions (no runway changes)
@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
-        with: { node-version: 24, cache: npm }
+        with: { node-version: 26, cache: npm }
       - uses: actions/setup-python@v7
         with: { python-version: "3.14" }
       - run: npm ci && npm test
@@ -34,8 +34,56 @@ npx -y @mintwork/runway update --runner-tools ./runner-tools.sh    # upload and 
 npx -y @mintwork/runway update --runner-tools none                 # remove it again
 ```
 
-The rebuild takes 10–20 minutes. Jobs keep running on the old images until the new ones are ready.
-The weekly image refresh keeps using your script, so you set it once.
+The rebuild takes 5–20 minutes, depending on what your script installs. Jobs keep running on the
+old images until the new ones are ready. The automatic image refresh keeps using your script, so you
+set it once.
+
+## Adding or updating tools later
+
+The images are built at setup, but you can change what's on them whenever you like: edit the
+script and hand it to runway again.
+
+1. **Edit `runner-tools.sh`.** Add a package or download, or bump a version (`NODE_VERSION=26.14.0`).
+   Keep the script in git, next to your workflows, so you know what's baked in and can go back.
+2. **Try it locally** in the same base OS (see [below](#example)), so a typo doesn't fail the build.
+3. **Upload it and rebuild:**
+
+   ```bash
+   npx -y @mintwork/runway update --runner-tools ./runner-tools.sh
+   ```
+
+   `update` uploads the script, rebuilds every image and waits for the builds, then says which
+   ones succeeded. Your other settings stay as they are. Add `--no-wait` to return right away and
+   follow the builds with `npx -y @mintwork/runway status`.
+4. **Check it** with a job that prints the version, for example `run: terraform version`.
+
+When each compute type picks up the new tools:
+
+| Compute type | New jobs get the new tools…                                                     |
+| ------------ | ------------------------------------------------------------------------------- |
+| MicroVM      | once the new image version is active                                            |
+| Fargate      | once the new image is pushed                                                    |
+| Lambda       | once the build has pointed the runner functions at the new image                |
+| EC2          | right away: EC2 runs the script at every boot, so it doesn't wait for a rebuild |
+
+Jobs already running finish on the image they started with, and nothing goes down during the
+rebuild. Each image builds on its own: if one fails, that compute type keeps its previous image,
+and `update` names the failed build and where its logs are.
+
+> **EC2 has no safety net.** EC2 runners run the script at boot instead of using a built image, so
+> a script that fails breaks EC2 jobs straight away. Test it locally first (step 2).
+
+**Going back** to a previous set of tools is the same command with the older script
+(`git show HEAD~1:runner-tools.sh > /tmp/tools.sh`, then `--runner-tools /tmp/tools.sh`).
+`--runner-tools none` removes your tools altogether.
+
+**Updates you don't have to do.** runway rebuilds the images by itself when GitHub ships a new
+runner (checked weekly), and at least monthly for OS patches. Those rebuilds re-run your script, so
+pin versions: a script that downloads "latest" can change versions without you touching it.
+
+**One tool set per stack.** Every repository and job served by a stack gets the same script (it can
+still branch on `RUNWAY_TARGET` and `RUNWAY_ARCH`). For a second tool set, set up a second stack
+with `--stack <name>`, or install the odd tool per job with a setup action.
 
 ### What your script gets
 
